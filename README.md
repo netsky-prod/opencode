@@ -64,6 +64,14 @@ nix run nixpkgs#opencode           # or github:anomalyco/opencode for latest dev
 > [!TIP]
 > Remove versions older than 0.1.x before installing.
 
+#### Netsky fork with durable loops
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/netsky-prod/opencode/dev/install | bash
+```
+
+This installs the unsigned CLI from `netsky-prod/opencode`; npm and package-manager commands above install upstream OpenCode. See [durable loops](./docs/loop.md) and the [fork release runbook](./docs/fork-release.md).
+
 ### Desktop App (BETA)
 
 OpenCode is also available as a desktop application. Download directly from the [releases page](https://github.com/anomalyco/opencode/releases) or [opencode.ai/download](https://opencode.ai/download).
@@ -115,8 +123,6 @@ Learn more about [agents](https://opencode.ai/docs/agents).
 ### Documentation
 
 For more info on how to configure OpenCode, [**head over to our docs**](https://opencode.ai/docs).
-
-Fork feature: [durable `/loop` scheduling](./docs/loop.md).
 
 ### Contributing
 
