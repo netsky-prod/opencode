@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 APP=opencode
+REPOSITORY=netsky-prod/opencode
+# Fork releases: https://github.com/netsky-prod/opencode/releases
+# Fork release API: https://api.github.com/repos/netsky-prod/opencode/releases/latest
 
 MUTED='\033[0;2m'
 RED='\033[0;31m'
@@ -20,8 +23,8 @@ Options:
         --no-modify-path    Don't modify shell config files (.zshrc, .bashrc, etc.)
 
 Examples:
-    curl -fsSL https://opencode.ai/install | bash
-    curl -fsSL https://opencode.ai/install | bash -s -- --version 1.0.180
+    curl -fsSL https://raw.githubusercontent.com/netsky-prod/opencode/dev/install | bash
+    curl -fsSL https://raw.githubusercontent.com/netsky-prod/opencode/dev/install | bash -s -- --version 1.18.25-loop.1
     ./install --binary /path/to/opencode
 EOF
 }
@@ -101,7 +104,7 @@ else
 
     combo="$os-$arch"
     case "$combo" in
-      linux-x64|linux-arm64|darwin-x64|darwin-arm64|windows-x64)
+      linux-x64|linux-arm64|darwin-x64|darwin-arm64)
         ;;
       *)
         echo -e "${RED}Unsupported OS/Arch: $os/$arch${NC}"
@@ -142,27 +145,16 @@ else
         fi
       fi
 
-      if [ "$os" = "windows" ]; then
-        ps="(Add-Type -MemberDefinition \"[DllImport(\"\"kernel32.dll\"\")] public static extern bool IsProcessorFeaturePresent(int ProcessorFeature);\" -Name Kernel32 -Namespace Win32 -PassThru)::IsProcessorFeaturePresent(40)"
-        out=""
-        if command -v powershell.exe >/dev/null 2>&1; then
-          out=$(powershell.exe -NoProfile -NonInteractive -Command "$ps" 2>/dev/null || true)
-        elif command -v pwsh >/dev/null 2>&1; then
-          out=$(pwsh -NoProfile -NonInteractive -Command "$ps" 2>/dev/null || true)
-        fi
-        out=$(echo "$out" | tr -d '\r' | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
-        if [ "$out" != "true" ] && [ "$out" != "1" ]; then
-          needs_baseline=true
-        fi
-      fi
     fi
 
     target="$os-$arch"
     if [ "$needs_baseline" = "true" ]; then
-      target="$target-baseline"
+      echo -e "${RED}Unsupported CPU: fork releases currently require AVX2 on x64.${NC}"
+      exit 1
     fi
     if [ "$is_musl" = "true" ]; then
-      target="$target-musl"
+      echo -e "${RED}Unsupported libc: fork releases currently require glibc on Linux.${NC}"
+      exit 1
     fi
 
     filename="$APP-$target$archive_ext"
@@ -181,8 +173,8 @@ else
     fi
 
     if [ -z "$requested_version" ]; then
-        url="https://github.com/anomalyco/opencode/releases/latest/download/$filename"
-        specific_version=$(curl -s https://api.github.com/repos/anomalyco/opencode/releases/latest | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')
+        url="https://github.com/$REPOSITORY/releases/latest/download/$filename"
+        specific_version=$(curl -s "https://api.github.com/repos/$REPOSITORY/releases/latest" | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')
 
         if [[ $? -ne 0 || -z "$specific_version" ]]; then
             echo -e "${RED}Failed to fetch version information${NC}"
@@ -191,14 +183,14 @@ else
     else
         # Strip leading 'v' if present
         requested_version="${requested_version#v}"
-        url="https://github.com/anomalyco/opencode/releases/download/v${requested_version}/$filename"
+        url="https://github.com/$REPOSITORY/releases/download/v${requested_version}/$filename"
         specific_version=$requested_version
 
         # Verify the release exists before downloading
-        http_status=$(curl -sI -o /dev/null -w "%{http_code}" "https://github.com/anomalyco/opencode/releases/tag/v${requested_version}")
+        http_status=$(curl -sI -o /dev/null -w "%{http_code}" "https://github.com/$REPOSITORY/releases/tag/v${requested_version}")
         if [ "$http_status" = "404" ]; then
             echo -e "${RED}Error: Release v${requested_version} not found${NC}"
-            echo -e "${MUTED}Available releases: https://github.com/anomalyco/opencode/releases${NC}"
+            echo -e "${MUTED}Available releases: https://github.com/$REPOSITORY/releases${NC}"
             exit 1
         fi
     fi
@@ -227,6 +219,11 @@ check_version() {
 
         if [[ "$installed_version" != "$specific_version" ]]; then
             print_message info "${MUTED}Installed version: ${NC}$installed_version."
+            case "$opencode_path" in
+                "$INSTALL_DIR"/*)
+                    print_message info "${MUTED}Replacing fork binary at ${NC}$opencode_path${MUTED} with version ${NC}$specific_version"
+                    ;;
+            esac
         else
             print_message info "${MUTED}Version ${NC}$specific_version${MUTED} already installed"
             exit 0
@@ -352,6 +349,7 @@ install_from_binary() {
 }
 
 if [ -n "$binary_path" ]; then
+    check_version
     install_from_binary
 else
     check_version
