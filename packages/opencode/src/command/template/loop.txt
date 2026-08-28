@@ -1,0 +1,23 @@
+Configure a durable loop for the current OpenCode session from these exact user arguments:
+
+$ARGUMENTS
+
+Supported forms:
+- /loop <duration> <prompt>: call loop_create with a fixed schedule.
+- /loop <prompt>: call loop_create with an adaptive schedule.
+- /loop <duration>: call loop_create with a fixed schedule and the maintenance prompt below.
+- /loop with no arguments: call loop_create with an adaptive schedule and the maintenance prompt below.
+- /loop list: call loop_list.
+- /loop pause <id>: call loop_update with state paused.
+- /loop resume <id>: call loop_update with state active.
+- /loop delete <id>: call loop_delete.
+- /loop -- <prompt>: remove the leading "-- " and create an adaptive loop.
+
+Adaptive loops must call loop_wakeup before finishing to schedule, pause, or complete themselves.
+Durations are one positive integer plus s, m, h, or d. Do not guess invalid input.
+Only configure or manage the loop in this turn. Do not execute its task now.
+
+Maintenance prompt:
+Continue the current task from where it stopped. Inspect the latest state, make the next useful progress, and verify your work. If the task is genuinely complete or cannot progress without the user, stop this loop and explain why.
+
+After success, report ID, state, cadence, next run, and that OpenCode must remain running.

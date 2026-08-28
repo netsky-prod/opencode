@@ -8,6 +8,7 @@ import { Config } from "@/config/config"
 import { MCP } from "../mcp"
 import { Skill } from "../skill"
 import PROMPT_INITIALIZE from "./template/initialize.txt"
+import PROMPT_LOOP from "./template/loop.txt"
 import PROMPT_REVIEW from "./template/review.txt"
 import { LegacyEvent } from "@opencode-ai/schema/legacy-event"
 
@@ -45,8 +46,11 @@ export function hints(template: string) {
 
 export const Default = {
   INIT: "init",
+  LOOP: "loop",
   REVIEW: "review",
 } as const
+
+export const LOOP_TEMPLATE = PROMPT_LOOP
 
 export interface Interface {
   readonly get: (name: string) => Effect.Effect<Info | undefined>
@@ -85,6 +89,13 @@ const layer = Layer.effect(
         },
         subtask: true,
         hints: hints(PROMPT_REVIEW),
+      }
+      commands[Default.LOOP] = {
+        name: Default.LOOP,
+        description: "schedule durable recurring work for this session",
+        source: "command",
+        template: LOOP_TEMPLATE,
+        hints: hints(LOOP_TEMPLATE),
       }
 
       for (const [name, command] of Object.entries(cfg.command ?? {})) {
