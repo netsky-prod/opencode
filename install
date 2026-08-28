@@ -3,7 +3,7 @@ set -euo pipefail
 APP=opencode
 REPOSITORY=netsky-prod/opencode
 # Fork releases: https://github.com/netsky-prod/opencode/releases
-# Fork release API: https://api.github.com/repos/netsky-prod/opencode/releases/latest
+# Fork release API includes prereleases because fork builds use -loop.N versions.
 
 MUTED='\033[0;2m'
 RED='\033[0;31m'
@@ -173,13 +173,13 @@ else
     fi
 
     if [ -z "$requested_version" ]; then
-        url="https://github.com/$REPOSITORY/releases/latest/download/$filename"
-        specific_version=$(curl -s "https://api.github.com/repos/$REPOSITORY/releases/latest" | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')
+        specific_version=$(curl -s "https://api.github.com/repos/$REPOSITORY/releases?per_page=1" | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p' | head -n 1)
 
         if [[ $? -ne 0 || -z "$specific_version" ]]; then
             echo -e "${RED}Failed to fetch version information${NC}"
             exit 1
         fi
+        url="https://github.com/$REPOSITORY/releases/download/v${specific_version}/$filename"
     else
         # Strip leading 'v' if present
         requested_version="${requested_version#v}"

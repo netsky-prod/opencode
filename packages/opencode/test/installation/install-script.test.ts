@@ -7,7 +7,9 @@ describe("fork install script", () => {
   test("contains only fork GitHub release endpoints", async () => {
     const script = await Bun.file(path.resolve(import.meta.dir, "../../../../install")).text()
     expect(script).toContain("github.com/netsky-prod/opencode/releases")
-    expect(script).toContain("api.github.com/repos/netsky-prod/opencode/releases/latest")
+    expect(script).toContain("api.github.com/repos/$REPOSITORY/releases?per_page=1")
+    expect(script).toContain('url="https://github.com/$REPOSITORY/releases/download/v${specific_version}/$filename"')
+    expect(script).not.toContain('url="https://github.com/$REPOSITORY/releases/latest/download/$filename"')
     expect(script).not.toContain("github.com/anomalyco/opencode/releases")
     expect(script).toContain("linux-x64|linux-arm64|darwin-x64|darwin-arm64)")
     expect(script).not.toContain("windows-x64)")
