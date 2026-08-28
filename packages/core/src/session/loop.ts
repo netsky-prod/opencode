@@ -1,14 +1,15 @@
 export * as SessionLoop from "./loop"
 
-import { and, asc, eq, sql } from "drizzle-orm"
+import { and, asc, eq, isNull, lte, or, sql } from "drizzle-orm"
 import { Context, DateTime, Effect, Layer, Schema } from "effect"
 import { Database } from "../database/database"
 import { makeGlobalNode } from "../effect/app-node"
 import { Identifier } from "../id/id"
+import { SessionInput } from "./input"
 import { SessionMessage } from "./message"
-import { initialNextRun, MAX_DELAY_MS, MIN_DELAY_MS } from "./loop-schedule"
+import { ADAPTIVE_FALLBACK_MS, initialNextRun, MAX_DELAY_MS, MIN_DELAY_MS, nextFixedBoundary } from "./loop-schedule"
 import { SessionSchema } from "./schema"
-import { SessionLoopTable, SessionTable } from "./sql"
+import { SessionInputTable, SessionLoopTable, SessionTable } from "./sql"
 
 export const ID = Schema.String.check(Schema.isStartsWith("loop_")).pipe(Schema.brand("SessionLoop.ID"))
 export type ID = typeof ID.Type
@@ -71,12 +72,36 @@ type UpdateInput = {
 
 type OwnedInput = { readonly sessionID: SessionSchema.ID; readonly id: ID }
 
+export type Claim = {
+  readonly loop: Info
+  readonly messageID: SessionMessage.ID
+}
+
 export interface Interface {
   readonly create: (input: CreateInput) => Effect.Effect<Info, InvalidInput | SessionNotFound>
   readonly get: (input: OwnedInput) => Effect.Effect<Info, NotFound>
   readonly list: (sessionID: SessionSchema.ID) => Effect.Effect<ReadonlyArray<Info>>
   readonly update: (input: UpdateInput) => Effect.Effect<Info, InvalidInput | NotFound>
   readonly remove: (input: OwnedInput) => Effect.Effect<boolean, NotFound>
+  readonly claimDue: (input: {
+    readonly owner: string
+    readonly now: number
+    readonly leaseMs: number
+    readonly limit: number
+  }) => Effect.Effect<ReadonlyArray<Claim>>
+  readonly markAdmitted: (input: {
+    readonly id: ID
+    readonly messageID: SessionMessage.ID
+    readonly now: number
+  }) => Effect.Effect<void>
+  readonly recordFailure: (input: {
+    readonly id: ID
+    readonly messageID: SessionMessage.ID
+    readonly now: number
+    readonly retryAt: number
+    readonly error: string
+  }) => Effect.Effect<void>
+  readonly reconcilePending: (now: number) => Effect.Effect<number>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/SessionLoop") {}
@@ -240,7 +265,190 @@ const layer = Layer.effect(
       return current.pendingMessageID !== undefined
     })
 
-    return Service.of({ create, get, list, update, remove })
+    const claimDue = Effect.fn("SessionLoop.claimDue")(function* (input: {
+      readonly owner: string
+      readonly now: number
+      readonly leaseMs: number
+      readonly limit: number
+    }) {
+      if (input.limit <= 0 || input.leaseMs <= 0) return []
+      return yield* db
+        .transaction((tx) =>
+          Effect.gen(function* () {
+            const candidates = yield* tx
+              .select()
+              .from(SessionLoopTable)
+              .where(
+                and(
+                  eq(SessionLoopTable.state, "active"),
+                  lte(SessionLoopTable.next_run_at, input.now),
+                  or(isNull(SessionLoopTable.lease_expires_at), lte(SessionLoopTable.lease_expires_at, input.now)),
+                ),
+              )
+              .orderBy(asc(SessionLoopTable.next_run_at), asc(SessionLoopTable.id))
+              .limit(input.limit)
+              .all()
+
+            const claims = new Array<Claim>()
+            for (const candidate of candidates) {
+              const pendingID =
+                candidate.pending_message_id === null ? undefined : SessionMessage.ID.make(candidate.pending_message_id)
+              const pending =
+                pendingID === undefined
+                  ? undefined
+                  : yield* tx
+                      .select({ promotedSeq: SessionInputTable.promoted_seq })
+                      .from(SessionInputTable)
+                      .where(eq(SessionInputTable.id, pendingID))
+                      .get()
+
+              if (pending?.promotedSeq === null) {
+                const nextRunAt =
+                  candidate.mode === "fixed"
+                    ? nextFixedBoundary(candidate.next_run_at!, candidate.interval_ms!, input.now)
+                    : input.now + ADAPTIVE_FALLBACK_MS
+                yield* tx
+                  .update(SessionLoopTable)
+                  .set({
+                    last_due_at: candidate.next_run_at,
+                    next_run_at: nextRunAt,
+                    lease_owner: null,
+                    lease_expires_at: null,
+                    time_updated: input.now,
+                  })
+                  .where(
+                    and(
+                      eq(SessionLoopTable.id, candidate.id),
+                      eq(SessionLoopTable.state, "active"),
+                      lte(SessionLoopTable.next_run_at, input.now),
+                    ),
+                  )
+                  .run()
+                continue
+              }
+
+              if (pending !== undefined && pending.promotedSeq !== null) {
+                yield* tx
+                  .update(SessionLoopTable)
+                  .set({ pending_message_id: null })
+                  .where(eq(SessionLoopTable.id, candidate.id))
+                  .run()
+              }
+
+              const retry = pendingID !== undefined && pending === undefined
+              const messageID = retry ? pendingID : SessionMessage.ID.create()
+              const previousDue =
+                retry && candidate.last_due_at !== null ? candidate.last_due_at : candidate.next_run_at!
+              const nextRunAt =
+                candidate.mode === "fixed"
+                  ? nextFixedBoundary(previousDue, candidate.interval_ms!, input.now)
+                  : input.now + ADAPTIVE_FALLBACK_MS
+              const claimed = yield* tx
+                .update(SessionLoopTable)
+                .set({
+                  pending_message_id: messageID,
+                  last_due_at: retry ? candidate.last_due_at : candidate.next_run_at,
+                  next_run_at: nextRunAt,
+                  lease_owner: input.owner,
+                  lease_expires_at: input.now + input.leaseMs,
+                  time_updated: input.now,
+                })
+                .where(
+                  and(
+                    eq(SessionLoopTable.id, candidate.id),
+                    eq(SessionLoopTable.state, "active"),
+                    lte(SessionLoopTable.next_run_at, input.now),
+                    or(isNull(SessionLoopTable.lease_expires_at), lte(SessionLoopTable.lease_expires_at, input.now)),
+                  ),
+                )
+                .returning()
+                .get()
+              if (claimed) claims.push({ loop: fromRow(claimed), messageID })
+            }
+            return claims
+          }),
+        )
+        .pipe(Effect.orDie)
+    })
+
+    const markAdmitted = Effect.fn("SessionLoop.markAdmitted")(function* (input: {
+      readonly id: ID
+      readonly messageID: SessionMessage.ID
+      readonly now: number
+    }) {
+      yield* db
+        .update(SessionLoopTable)
+        .set({
+          last_admitted_at: input.now,
+          last_error: null,
+          failure_count: 0,
+          lease_owner: null,
+          lease_expires_at: null,
+          time_updated: input.now,
+        })
+        .where(and(eq(SessionLoopTable.id, input.id), eq(SessionLoopTable.pending_message_id, input.messageID)))
+        .run()
+        .pipe(Effect.orDie)
+    })
+
+    const recordFailure = Effect.fn("SessionLoop.recordFailure")(function* (input: {
+      readonly id: ID
+      readonly messageID: SessionMessage.ID
+      readonly now: number
+      readonly retryAt: number
+      readonly error: string
+    }) {
+      yield* db
+        .update(SessionLoopTable)
+        .set({
+          next_run_at: input.retryAt,
+          last_error: input.error.slice(0, 2_000),
+          failure_count: sql`${SessionLoopTable.failure_count} + 1`,
+          lease_owner: null,
+          lease_expires_at: null,
+          time_updated: input.now,
+        })
+        .where(
+          and(
+            eq(SessionLoopTable.id, input.id),
+            eq(SessionLoopTable.state, "active"),
+            eq(SessionLoopTable.pending_message_id, input.messageID),
+          ),
+        )
+        .run()
+        .pipe(Effect.orDie)
+    })
+
+    const reconcilePending = Effect.fn("SessionLoop.reconcilePending")(function* (timestamp: number) {
+      const rows = yield* db
+        .select({ id: SessionLoopTable.id, pendingMessageID: SessionLoopTable.pending_message_id })
+        .from(SessionLoopTable)
+        .where(sql`${SessionLoopTable.pending_message_id} IS NOT NULL`)
+        .all()
+        .pipe(Effect.orDie)
+      let reconciled = 0
+      for (const row of rows) {
+        const messageID = SessionMessage.ID.make(row.pendingMessageID!)
+        const pending = yield* SessionInput.find(db, messageID)
+        if (pending?.promotedSeq === undefined) continue
+        const result = yield* db
+          .update(SessionLoopTable)
+          .set({
+            pending_message_id: null,
+            lease_owner: null,
+            lease_expires_at: null,
+            time_updated: timestamp,
+          })
+          .where(and(eq(SessionLoopTable.id, row.id), eq(SessionLoopTable.pending_message_id, messageID)))
+          .returning({ id: SessionLoopTable.id })
+          .get()
+          .pipe(Effect.orDie)
+        if (result) reconciled++
+      }
+      return reconciled
+    })
+
+    return Service.of({ create, get, list, update, remove, claimDue, markAdmitted, recordFailure, reconcilePending })
   }),
 )
 

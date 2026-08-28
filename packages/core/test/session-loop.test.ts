@@ -9,7 +9,7 @@ import { ProjectTable } from "@opencode-ai/core/project/sql"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { SessionV2 } from "@opencode-ai/core/session"
 import { SessionLoop } from "@opencode-ai/core/session/loop"
-import { SessionLoopTable, SessionTable } from "@opencode-ai/core/session/sql"
+import { SessionInputTable, SessionLoopTable, SessionTable } from "@opencode-ai/core/session/sql"
 import { testEffect } from "./lib/effect"
 
 const it = testEffect(AppNodeBuilder.build(LayerNode.group([Database.node, SessionLoop.node])))
@@ -142,6 +142,133 @@ describe("SessionLoop", () => {
       expect(
         yield* db.select().from(SessionLoopTable).orderBy(asc(SessionLoopTable.id)).all().pipe(Effect.orDie),
       ).toEqual([])
+    }),
+  )
+
+  it.effect("claims each due invocation once and reuses its message ID after failure", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const loops = yield* SessionLoop.Service
+      const created = yield* loops.create({
+        sessionID,
+        prompt: "Check CI",
+        mode: "fixed",
+        intervalMs: 60_000,
+        now: 1_000,
+      })
+
+      const [claim] = yield* loops.claimDue({ owner: "one", now: 61_000, leaseMs: 30_000, limit: 10 })
+      expect(claim.loop.nextRunAt).toBe(121_000)
+      expect(claim.loop.pendingMessageID).toBe(claim.messageID)
+      expect(yield* loops.claimDue({ owner: "two", now: 61_000, leaseMs: 30_000, limit: 10 })).toEqual([])
+
+      yield* loops.recordFailure({
+        id: created.id,
+        messageID: claim.messageID,
+        now: 61_001,
+        retryAt: 66_001,
+        error: "provider unavailable",
+      })
+      const [retried] = yield* loops.claimDue({ owner: "two", now: 66_001, leaseMs: 30_000, limit: 10 })
+      expect(retried.messageID).toBe(claim.messageID)
+
+      yield* loops.markAdmitted({ id: created.id, messageID: claim.messageID, now: 66_002 })
+      expect(yield* loops.get({ sessionID, id: created.id })).toMatchObject({
+        lastAdmittedAt: 66_002,
+        failureCount: 0,
+        pendingMessageID: claim.messageID,
+      })
+    }),
+  )
+
+  it.effect("coalesces unpromoted input and clears promoted input", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const { db } = yield* Database.Service
+      const loops = yield* SessionLoop.Service
+      const created = yield* loops.create({
+        sessionID,
+        prompt: "Check CI",
+        mode: "fixed",
+        intervalMs: 60_000,
+        now: 1_000,
+      })
+      const [claim] = yield* loops.claimDue({ owner: "one", now: 61_000, leaseMs: 30_000, limit: 10 })
+      yield* db
+        .insert(SessionInputTable)
+        .values({
+          id: claim.messageID,
+          session_id: sessionID,
+          prompt: { text: "scheduled" },
+          delivery: "queue",
+          admitted_seq: 1,
+          time_created: 61_000,
+        })
+        .run()
+        .pipe(Effect.orDie)
+      yield* loops.markAdmitted({ id: created.id, messageID: claim.messageID, now: 61_001 })
+
+      expect(yield* loops.claimDue({ owner: "two", now: 121_000, leaseMs: 30_000, limit: 10 })).toEqual([])
+      expect(yield* loops.get({ sessionID, id: created.id })).toMatchObject({
+        pendingMessageID: claim.messageID,
+        nextRunAt: 181_000,
+      })
+
+      yield* db
+        .update(SessionInputTable)
+        .set({ promoted_seq: 2 })
+        .where(eq(SessionInputTable.id, claim.messageID))
+        .run()
+        .pipe(Effect.orDie)
+      yield* loops.reconcilePending(121_001)
+      expect((yield* loops.get({ sessionID, id: created.id })).pendingMessageID).toBeUndefined()
+    }),
+  )
+
+  it.effect("handles adaptive fallback and explicit state transitions", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const loops = yield* SessionLoop.Service
+      const adaptive = yield* loops.create({ sessionID, prompt: "decide", mode: "adaptive", now: 1_000 })
+      const [claim] = yield* loops.claimDue({ owner: "one", now: 1_000, leaseMs: 30_000, limit: 10 })
+      expect(claim.loop.nextRunAt).toBe(601_000)
+
+      const paused = yield* loops.update({
+        sessionID,
+        id: adaptive.id,
+        state: "paused",
+        reason: "waiting for user",
+        now: 2_000,
+      })
+      expect(paused.nextRunAt).toBeUndefined()
+      const resumed = yield* loops.update({ sessionID, id: adaptive.id, state: "active", now: 3_000 })
+      expect(resumed.nextRunAt).toBe(3_000)
+      const completed = yield* loops.update({ sessionID, id: adaptive.id, state: "completed", now: 4_000 })
+      expect(completed).toMatchObject({ state: "completed", reason: "waiting for user" })
+
+      const fixed = yield* loops.create({
+        sessionID,
+        prompt: "fixed",
+        mode: "fixed",
+        intervalMs: 60_000,
+        now: 5_000,
+      })
+      yield* loops.update({ sessionID, id: fixed.id, state: "paused", now: 6_000 })
+      expect((yield* loops.update({ sessionID, id: fixed.id, state: "active", now: 7_000 })).nextRunAt).toBe(67_000)
+    }),
+  )
+
+  it.effect("allows only one concurrent claimant", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const loops = yield* SessionLoop.Service
+      yield* loops.create({ sessionID, prompt: "race", mode: "adaptive", now: 1_000 })
+      const claims = yield* Effect.all(
+        ["one", "two"].map((owner) => loops.claimDue({ owner, now: 1_000, leaseMs: 30_000, limit: 10 })),
+        { concurrency: "unbounded" },
+      )
+      expect(claims.flat()).toHaveLength(1)
+      expect(claims.flat()[0]?.messageID.startsWith("msg_")).toBe(true)
     }),
   )
 })
