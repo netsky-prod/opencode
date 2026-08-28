@@ -67,6 +67,30 @@ function testLayer(
 }
 
 describe("installation", () => {
+  const forkCalls: string[] = []
+  testEffect(
+    testLayer(
+      (request) => {
+        forkCalls.push(request.url)
+        if (request.url.endsWith("/install")) return new Response("install script", { status: 200 })
+        return jsonResponse({ tag_name: "v1.18.25-loop.1" })
+      },
+      (cmd, args) => {
+        if (cmd === "bash" && args[0] === "--version") return "GNU bash"
+        return "ok"
+      },
+    ),
+  ).effect("keeps release lookup and curl upgrades on the fork", () =>
+    Effect.gen(function* () {
+      forkCalls.length = 0
+      expect(yield* Installation.use.latest("curl")).toBe("1.18.25-loop.1")
+      yield* Installation.use.upgrade("curl", "1.18.25-loop.1")
+      expect(forkCalls).toContain("https://api.github.com/repos/netsky-prod/opencode/releases/latest")
+      expect(forkCalls).toContain("https://raw.githubusercontent.com/netsky-prod/opencode/dev/install")
+      expect(forkCalls.some((url) => url.includes("anomalyco/opencode"))).toBe(false)
+    }),
+  )
+
   describe("latest", () => {
     testEffect(testLayer(() => jsonResponse({ tag_name: "v1.2.3" }))).effect(
       "reads release version from GitHub releases",
