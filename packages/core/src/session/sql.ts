@@ -1,4 +1,5 @@
-import { sqliteTable, text, integer, index, primaryKey, real, uniqueIndex } from "drizzle-orm/sqlite-core"
+import { sql } from "drizzle-orm"
+import { check, sqliteTable, text, integer, index, primaryKey, real, uniqueIndex } from "drizzle-orm/sqlite-core"
 import * as DatabasePath from "../database/path"
 import { ProjectTable } from "../project/sql"
 import type { SessionMessage } from "./message"
@@ -162,6 +163,44 @@ export const SessionInputTable = sqliteTable(
     ),
     uniqueIndex("session_input_session_admitted_seq_idx").on(table.session_id, table.admitted_seq),
     uniqueIndex("session_input_session_promoted_seq_idx").on(table.session_id, table.promoted_seq),
+  ],
+)
+
+export const SessionLoopTable = sqliteTable(
+  "session_loop",
+  {
+    id: text().primaryKey(),
+    session_id: text()
+      .$type<SessionSchema.ID>()
+      .notNull()
+      .references(() => SessionTable.id, { onDelete: "cascade" }),
+    prompt: text().notNull(),
+    mode: text().$type<"fixed" | "adaptive">().notNull(),
+    interval_ms: integer(),
+    state: text().$type<"active" | "paused" | "completed">().notNull(),
+    next_run_at: integer(),
+    last_due_at: integer(),
+    last_admitted_at: integer(),
+    pending_message_id: text().$type<SessionMessage.ID>(),
+    reason: text(),
+    last_error: text(),
+    failure_count: integer().notNull().default(0),
+    lease_owner: text(),
+    lease_expires_at: integer(),
+    ...Timestamps,
+  },
+  (table) => [
+    index("session_loop_due_idx").on(table.state, table.next_run_at),
+    index("session_loop_session_state_idx").on(table.session_id, table.state),
+    uniqueIndex("session_loop_pending_message_idx").on(table.pending_message_id),
+    check(
+      "session_loop_mode_interval_check",
+      sql`(mode = 'fixed' AND interval_ms IS NOT NULL) OR (mode = 'adaptive' AND interval_ms IS NULL)`,
+    ),
+    check(
+      "session_loop_state_next_check",
+      sql`(state = 'active' AND next_run_at IS NOT NULL) OR (state != 'active' AND next_run_at IS NULL)`,
+    ),
   ],
 )
 
