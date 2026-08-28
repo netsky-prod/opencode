@@ -723,7 +723,7 @@ git commit -m "feat(opencode): add durable loop command"
 
 - Modify: `packages/opencode/src/server/routes/instance/httpapi/server.ts`
 - Modify: `packages/core/test/session-loop-scheduler.test.ts`
-- Create: `packages/opencode/test/server/loop-scheduler-wiring.test.ts`
+- Create: `packages/opencode/test/server/loop-scheduler.test.ts`
 
 **Interfaces:**
 
@@ -741,30 +741,66 @@ expect(promptCalls).toHaveLength(1)
 expect(promptCalls[0]?.delivery).toBe("queue")
 ```
 
-Add this server wiring contract test:
+Add a behavioral server integration test, following
+`test/server/httpapi-v2-location.test.ts`:
 
 ```ts
-import { expect, test } from "bun:test"
-import path from "path"
+test("admits an overdue loop exactly once through the real server graph", async () => {
+  await using tmp = await tmpdir({ git: true })
+  const response = await request("/session", tmp.path, { method: "POST" })
+  const session = (await response.json()) as { id: string }
 
-test("boots the loop scheduler with the replaced V2 execution graph", async () => {
-  const source = await Bun.file(
-    path.resolve(import.meta.dir, "../../src/server/routes/instance/httpapi/server.ts"),
-  ).text()
-  expect(source).toContain("LayerNode.group([SessionV2.node, SessionLoopScheduler.node])")
-  expect(source).toContain("[SessionExecution.node, SessionExecutionLocal.node]")
-  expect(source.match(/AppNodeBuilderV1\.build\(SessionV2\.node/g)).toBeNull()
+  const sqlite = new SQLite(CoreDatabase.path())
+  try {
+    const now = Date.now()
+    sqlite
+      .query(
+        `INSERT INTO session_loop
+          (id, session_id, prompt, mode, interval_ms, state, next_run_at,
+           failure_count, time_created, time_updated)
+         VALUES (?, ?, ?, 'fixed', ?, 'active', ?, 0, ?, ?)`,
+      )
+      .run("loop_server_test", session.id, "Continue integration test", 10_000, now - 1, now, now)
+
+    const admitted = await Effect.runPromise(
+      pollWithTimeout(
+        Effect.sync(
+          () =>
+            sqlite.query("SELECT id, delivery FROM session_input WHERE session_id = ?").all(session.id)[0] as
+              | { id: string; delivery: string }
+              | undefined,
+        ),
+        "scheduler did not admit queued input",
+      ),
+    )
+    expect(admitted.delivery).toBe("queue")
+
+    await Bun.sleep(1_200)
+    const count = sqlite.query("SELECT count(*) AS count FROM session_input WHERE session_id = ?").get(session.id) as {
+      count: number
+    }
+    expect(count.count).toBe(1)
+  } finally {
+    sqlite.close()
+  }
 })
 ```
+
+Import `Database as SQLite` from `bun:sqlite`, the core database as
+`CoreDatabase`, `Effect`, and `pollWithTimeout`. Reuse the real `HttpApiApp`,
+request helper, `tmpdir`, `disposeAllInstances`, and `resetDatabase`. This test
+observes behavior through the assembled server layer; it must not inspect
+production source text.
 
 - [ ] **Step 2: Run RED**
 
 ```bash
 cd packages/core && bun test test/session-loop-scheduler.test.ts --timeout 30000 --only-failures
-cd ../opencode && bun test test/server/loop-scheduler-wiring.test.ts --timeout 30000 --only-failures
+cd ../opencode && bun test test/server/loop-scheduler.test.ts --timeout 30000 --only-failures
 ```
 
-Expected: lifecycle assertion fails because server wiring is absent.
+Expected: the lifecycle assertion or behavioral integration test fails because
+server wiring is absent.
 
 - [ ] **Step 3: Group SessionV2 and scheduler**
 
@@ -788,7 +824,7 @@ Run both commands from Step 2. Expected: pass.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add packages/opencode/src/server/routes/instance/httpapi/server.ts packages/core/test/session-loop-scheduler.test.ts packages/opencode/test/server/loop-scheduler-wiring.test.ts
+git add packages/opencode/src/server/routes/instance/httpapi/server.ts packages/core/test/session-loop-scheduler.test.ts packages/opencode/test/server/loop-scheduler.test.ts
 git commit -m "feat(opencode): boot the loop scheduler"
 ```
 
@@ -841,7 +877,7 @@ bun run typecheck
 From `packages/opencode`:
 
 ```bash
-bun test test/command-loop.test.ts test/server/loop-scheduler-wiring.test.ts --timeout 30000 --only-failures
+bun test test/command-loop.test.ts test/server/loop-scheduler.test.ts --timeout 30000 --only-failures
 bun run typecheck
 ```
 
