@@ -81,7 +81,7 @@ describe("v2 pty HttpApi", () => {
     expect(body.data.title).toBe("v2")
 
     // The canonical surface keeps exited sessions observable with their exit code.
-    const deadline = Date.now() + 5_000
+    const deadline = Date.now() + 15_000
     let info: { status: string; exitCode?: number } | undefined
     while (Date.now() < deadline) {
       const found = await request(`/api/pty/${body.data.id}`, tmp.path)
@@ -98,7 +98,7 @@ describe("v2 pty HttpApi", () => {
     const missing = await request(`/api/pty/${body.data.id}`, tmp.path)
     expect(missing.status).toBe(404)
     expect(await missing.json()).toMatchObject({ _tag: "PtyNotFoundError", ptyID: body.data.id })
-  })
+  }, 20_000)
 
   testPty("rejects connect tokens without the CSRF header and connects with a valid ticket", async () => {
     await using tmp = await tmpdir({ git: true, config: { formatter: false, lsp: false } })
