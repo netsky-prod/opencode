@@ -65,6 +65,7 @@ type UpdateInput = {
   readonly id: ID
   readonly prompt?: string
   readonly intervalMs?: number
+  readonly nextRunAt?: number
   readonly state?: State
   readonly reason?: string | null
   readonly now?: number
@@ -225,14 +226,19 @@ const layer = Layer.effect(
       const mode = input.intervalMs === undefined ? current.mode : "fixed"
       yield* validateSchedule(mode, intervalMs)
       const state = input.state ?? current.state
+      if (input.nextRunAt !== undefined && (current.mode !== "adaptive" || !Number.isSafeInteger(input.nextRunAt))) {
+        return yield* Effect.fail(new InvalidInput({ message: "Only adaptive loops accept an explicit wake-up" }))
+      }
       const reactivated = state === "active" && current.state !== "active"
       const cadenceChanged = input.intervalMs !== undefined && input.intervalMs !== current.intervalMs
       const nextRunAt =
         state !== "active"
           ? null
-          : reactivated || cadenceChanged
-            ? initialNextRun(mode, timestamp, intervalMs)
-            : current.nextRunAt
+          : input.nextRunAt !== undefined
+            ? input.nextRunAt
+            : reactivated || cadenceChanged
+              ? initialNextRun(mode, timestamp, intervalMs)
+              : current.nextRunAt
       const reason = input.reason === undefined ? current.reason : input.reason?.trim() || null
 
       const row = yield* db
