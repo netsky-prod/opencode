@@ -21,6 +21,7 @@
 - Support macOS and Linux and return actionable `healthy`, `degraded`, `failed`, or `unsupported` diagnostics.
 - Use test-first red-green cycles and run tests/typecheck only from package directories.
 - Never resolve credentials into model-visible manifests, status output, logs, or evaluation artifacts.
+- After each runnable slice, launch the built fork against the configured RunPod Qwen endpoint in a dedicated tmux session, execute a real outcome-based task, save the transcript/tool trace, and independently verify the artifact or external state; unit tests alone do not close a slice.
 
 ---
 
@@ -439,6 +440,10 @@ git add packages/core/src/plugin packages/core/test/plugin packages/opencode/tes
 git commit -m "feat(core): ship browser and research packs"
 ```
 
+- [ ] **Step 5: Run the first live Qwen gate in tmux**
+
+Build the worktree OpenCode, start a named tmux session `capability-slice-1`, and point it at the already configured RunPod Qwen endpoint without printing its bearer token. Give Qwen two fresh tasks: repair and verify a seeded bug in the local browser fixture using `browser/default`, and answer a source-sensitive technical question using `research/default`. Capture the OpenCode transcript and tool trace under `.superpowers/sdd/2026-09-03-capability-packs/live/slice-1/`. Independently assert the repaired fixture behavior, screenshot artifact, cited primary-source URL, session isolation, smallest-profile selection, and absence of inactive schemas.
+
 ---
 
 ### Task 7: Durable Loop Checkpoint Schema and Tools
@@ -555,6 +560,10 @@ git add packages/core/src/session packages/core/src/location-services.ts package
 git commit -m "feat(core): inject loop checkpoint context"
 ```
 
+- [ ] **Step 5: Run the checkpoint live Qwen gate in tmux**
+
+Start `capability-slice-2`, ask Qwen to create an adaptive loop that waits on a changing local fixture, force a process restart and a context compaction boundary, then change the fixture so the acceptance criterion becomes true. Preserve the transcript under `.superpowers/sdd/2026-09-03-capability-packs/live/slice-2/` and independently verify that objective, evidence, uncertainty, artifact, and next action survive; that completion occurs only after evidence; and that no `goal_*` object is created.
+
 ---
 
 ### Task 9: Mobile, Security, Documents, GitHub, and Deploy Packs
@@ -616,6 +625,10 @@ Run from `packages/opencode`: `bun test test/capability/pack-smoke.test.ts && bu
 git add packages/core/src/plugin/capability packages/core/test/plugin packages/opencode/test/capability
 git commit -m "feat(core): ship operational capability packs"
 ```
+
+- [ ] **Step 5: Run operational-pack live Qwen gates in tmux**
+
+Use one named tmux session per pack (`capability-mobile`, `capability-security`, `capability-documents`, `capability-github`, `capability-deploy`). Give Qwen disposable real tasks whose results can be checked without trusting its prose: inspect an available simulator or return actionable degradation; detect seeded security findings; extract facts from representative documents; inspect a fixture GitHub repository read-only; and build/health-check a disposable Docker service. Save transcripts/tool traces under `.superpowers/sdd/2026-09-03-capability-packs/live/slice-3/` and independently check artifacts, permissions, selected profiles, and cleanup.
 
 ---
 
@@ -766,6 +779,8 @@ bun run eval:capability --dry-run
 ```
 
 Confirm the ten acceptance criteria in the spec against test names and captured output. Run platform status on the local Mac and record only states/remediation, never environment values.
+
+Run a final `capability-final` tmux session against RunPod Qwen with an unseen multi-capability task requiring research, browser verification, durable checkpointing, and artifact production. Save the redacted transcript/tool trace under `.superpowers/sdd/2026-09-03-capability-packs/live/final/`; verify every artifact externally and compare the run to the baseline scorer before declaring completion.
 
 - [ ] **Step 4: Commit and prepare integration**
 
