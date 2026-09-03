@@ -3,7 +3,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js"
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js"
 import { ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { Deferred, Effect, Layer, Option } from "effect"
+import { Deferred, Effect, Fiber, Layer, Option } from "effect"
 import { Config } from "../../src/config/config"
 import { EventV2Bridge } from "../../src/event-v2-bridge"
 import { McpAuth } from "../../src/mcp/auth"
@@ -40,13 +40,25 @@ const mcpTest = testEffect(
 const serveOAuthMcp = Effect.acquireRelease(
   Effect.promise(async () => {
     const requests: Array<{ pathname: string; headers: Headers }> = []
-    const protocol = new Server({ name: "oauth-browser", version: "1.0.0" }, { capabilities: { tools: {} } })
-    protocol.setRequestHandler(ListToolsRequestSchema, () => Promise.resolve({ tools: [] }))
-    const transport = new WebStandardStreamableHTTPServerTransport({
-      sessionIdGenerator: () => crypto.randomUUID(),
-      enableJsonResponse: true,
-    })
-    await protocol.connect(transport)
+    const protocols: Server[] = []
+    let listToolsStarted: (() => void) | undefined
+    let listToolsWait: Promise<void> | undefined
+    const makeProtocol = async () => {
+      const protocol = new Server({ name: "oauth-browser", version: "1.0.0" }, { capabilities: { tools: {} } })
+      protocol.setRequestHandler(ListToolsRequestSchema, async () => {
+        listToolsStarted?.()
+        if (listToolsWait) await listToolsWait
+        return { tools: [] }
+      })
+      const transport = new WebStandardStreamableHTTPServerTransport({
+        sessionIdGenerator: () => crypto.randomUUID(),
+        enableJsonResponse: true,
+      })
+      await protocol.connect(transport)
+      protocols.push(protocol)
+      return { protocol, transport }
+    }
+    let current = await makeProtocol()
 
     const http = Bun.serve({
       hostname: "127.0.0.1",
@@ -57,7 +69,7 @@ const serveOAuthMcp = Effect.acquireRelease(
 
         if (url.pathname === "/mcp") {
           if (request.headers.get("authorization") === "Bearer test-access-token") {
-            return transport.handleRequest(request)
+            return current.transport.handleRequest(request)
           }
           return new Response("Unauthorized", {
             status: 401,
@@ -114,9 +126,16 @@ const serveOAuthMcp = Effect.acquireRelease(
     return {
       requests,
       url: new URL("/mcp", http.url).toString(),
+      blockTools: (started: () => void, wait: Promise<void>) => {
+        listToolsStarted = started
+        listToolsWait = wait
+      },
+      restart: async () => {
+        current = await makeProtocol()
+      },
       close: async () => {
         await http.stop(true)
-        await protocol.close()
+        await Promise.all(protocols.map((protocol) => protocol.close()))
       },
     }
   }),
@@ -221,5 +240,46 @@ mcpTest.instance("browser launch receives the discovered authorization URL", () 
         (request) => request.pathname === "/mcp" && request.headers.get("x-custom-header") === "custom-value",
       ),
     ).toBe(true)
+  }),
+)
+
+mcpTest.instance("remove invalidates an in-flight authenticated client settlement", () =>
+  Effect.gen(function* () {
+    yield* withCallbackStop
+    const server = yield* serveOAuthMcp
+    yield* trackBrowserOpen(server.url)
+    const mcp = yield* MCP.Service
+    const auth = yield* McpAuth.Service
+    const name = "remove-during-auth"
+    yield* auth.updateTokens(name, { accessToken: "test-access-token" }, server.url)
+    const added = yield* mcp.add(name, { type: "remote", url: server.url })
+    expect((yield* mcp.connection(added.registration))?.status).toBe("connected")
+    yield* Effect.promise(server.restart)
+
+    const listed = Promise.withResolvers<void>()
+    const releaseList = Promise.withResolvers<void>()
+    server.blockTools(listed.resolve, releaseList.promise)
+    const authenticating = yield* mcp.authenticate(name).pipe(Effect.forkChild)
+    yield* Effect.promise(() => listed.promise)
+
+    const client = (yield* mcp.clients())[name]!
+    const originalClose = client.close.bind(client)
+    const closing = Promise.withResolvers<void>()
+    const releaseClose = Promise.withResolvers<void>()
+    client.close = async () => {
+      closing.resolve()
+      await releaseClose.promise
+      await originalClose()
+    }
+    const removing = yield* mcp.remove(added.registration).pipe(Effect.forkChild)
+    yield* Effect.promise(() => closing.promise)
+
+    releaseList.resolve()
+    yield* Fiber.join(authenticating)
+    releaseClose.resolve()
+    yield* Fiber.join(removing)
+
+    expect(yield* mcp.connection(added.registration)).toBeUndefined()
+    expect((yield* mcp.clients())[name]).toBeUndefined()
   }),
 )

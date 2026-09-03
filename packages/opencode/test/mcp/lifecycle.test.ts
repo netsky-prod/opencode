@@ -56,6 +56,7 @@ function lifecycleServer(input?: { capabilities?: ServerCapabilities; instructio
         requests: [],
         aborted: 0,
       }
+      const protocols: Server[] = []
 
       const makeProtocol = async () => {
         const protocol = new Server(
@@ -115,6 +116,7 @@ function lifecycleServer(input?: { capabilities?: ServerCapabilities; instructio
             .catch(() => {})
         }
         await protocol.connect(transport)
+        protocols.push(protocol)
         return { protocol, transport }
       }
 
@@ -136,7 +138,7 @@ function lifecycleServer(input?: { capabilities?: ServerCapabilities; instructio
           current = await makeProtocol()
         },
         close: async () => {
-          await current.protocol.close().catch(() => {})
+          await Promise.all(protocols.map((protocol) => protocol.close().catch(() => {})))
           http.stop(true)
         },
       }
@@ -403,6 +405,77 @@ it.instance("an old remove finishing after replacement preserves the newer regis
     expect(secondServer.state.aborted).toBe(0)
     expect((yield* mcp.connection(second.registration))?.status).toBe("connected")
     expect(Object.keys(yield* mcp.tools())).toEqual(["same-name_second"])
+  }),
+)
+
+it.instance("remove invalidates an in-flight reconnect before waiting for client close", () =>
+  Effect.gen(function* () {
+    const server = yield* lifecycleServer()
+    const mcp = yield* MCP.Service
+    const added = yield* mcp.add("remove-reconnect", remote(server.url))
+    yield* Effect.promise(server.restart)
+    const listed = Promise.withResolvers<void>()
+    const releaseList = Promise.withResolvers<void>()
+    server.state.listToolsStarted = listed.resolve
+    server.state.listToolsWait = releaseList.promise
+    const reconnecting = yield* mcp.connect("remove-reconnect").pipe(Effect.forkChild)
+    yield* Effect.promise(() => listed.promise)
+
+    const client = (yield* mcp.clients())["remove-reconnect"]!
+    const originalClose = client.close.bind(client)
+    const closing = Promise.withResolvers<void>()
+    const releaseClose = Promise.withResolvers<void>()
+    client.close = async () => {
+      closing.resolve()
+      await releaseClose.promise
+      await originalClose()
+    }
+    const removing = yield* mcp.remove(added.registration).pipe(Effect.forkChild)
+    yield* Effect.promise(() => closing.promise)
+
+    const aborted = server.state.aborted
+    releaseList.resolve()
+    yield* Fiber.join(reconnecting)
+    yield* pollWithTimeout(
+      Effect.sync(() => (server.state.aborted > aborted ? server.state.aborted : undefined)),
+      "stale reconnect session was not aborted",
+    )
+    releaseClose.resolve()
+    yield* Fiber.join(removing)
+
+    expect(yield* mcp.connection(added.registration)).toBeUndefined()
+    expect((yield* mcp.clients())["remove-reconnect"]).toBeUndefined()
+    expect(Object.keys(yield* mcp.tools())).toEqual([])
+  }),
+)
+
+it.instance("disconnect finishing after replacement preserves the newer registration", () =>
+  Effect.gen(function* () {
+    const firstServer = yield* lifecycleServer()
+    const secondServer = yield* lifecycleServer()
+    firstServer.state.tools = [{ name: "first", inputSchema: { type: "object" } }]
+    secondServer.state.tools = [{ name: "second", inputSchema: { type: "object" } }]
+    const mcp = yield* MCP.Service
+    yield* mcp.add("disconnect-replace", remote(firstServer.url))
+    const client = (yield* mcp.clients())["disconnect-replace"]!
+    const originalClose = client.close.bind(client)
+    const closing = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    client.close = async () => {
+      closing.resolve()
+      await release.promise
+      await originalClose()
+    }
+    const disconnecting = yield* mcp.disconnect("disconnect-replace").pipe(Effect.forkChild)
+    yield* Effect.promise(() => closing.promise)
+
+    const second = yield* mcp.add("disconnect-replace", remote(secondServer.url))
+    release.resolve()
+    yield* Fiber.join(disconnecting)
+
+    expect(secondServer.state.aborted).toBe(0)
+    expect((yield* mcp.connection(second.registration))?.status).toBe("connected")
+    expect(Object.keys(yield* mcp.tools())).toEqual(["disconnect-replace_second"])
   }),
 )
 

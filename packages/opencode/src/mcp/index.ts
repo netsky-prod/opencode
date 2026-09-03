@@ -94,6 +94,10 @@ export interface Registration {
   readonly [RegistrationType]: typeof RegistrationType
 }
 
+function makeRegistration(name: string) {
+  return Object.freeze({ name }) as Registration
+}
+
 function createClient(directory: string) {
   const client = new Client({ name: "opencode", version: InstallationVersion }, CLIENT_OPTIONS)
   client.setRequestHandler(ListRootsRequestSchema, () =>
@@ -169,6 +173,10 @@ interface State {
   clients: Record<string, MCPClient>
   defs: Record<string, MCPToolDef[]>
   instructions: Record<string, string>
+}
+
+function ownsRegistration(s: State, name: string, registration: Registration | undefined) {
+  return registration !== undefined && s.registrations[name] === registration
 }
 
 export interface ServerInstructions {
@@ -551,6 +559,7 @@ const layer = Layer.effect(
                 return
               }
 
+              s.registrations[key] = makeRegistration(key)
               if (mcp.enabled === false) {
                 s.status[key] = { status: "disabled" }
                 return
@@ -620,7 +629,7 @@ const layer = Layer.effect(
       registration?: Registration,
     ) {
       const bridge = yield* EffectBridge.make()
-      if (s.registrations[name] !== registration) {
+      if (!ownsRegistration(s, name, registration)) {
         yield* closePromise(() => client.close(), timeout)
         return { status: "connected" } satisfies Status
       }
@@ -686,9 +695,10 @@ const layer = Layer.effect(
       registration: Registration | undefined,
     ) {
       const s = yield* InstanceState.get(state)
+      if (!ownsRegistration(s, name, registration)) return s.status[name] ?? ({ status: "disabled" } satisfies Status)
       const result = yield* create(name, mcp)
 
-      if (s.registrations[name] !== registration) {
+      if (!ownsRegistration(s, name, registration)) {
         if (result.mcpClient) yield* closePromise(() => result.mcpClient!.close(), mcp.timeout)
         return result.status
       }
@@ -706,12 +716,12 @@ const layer = Layer.effect(
       const name = registration.name
       if (s.registrations[name] !== registration) return false
       const timeout = s.config[name]?.timeout
+      delete s.registrations[name]
       delete s.config[name]
       s.hidden.delete(name)
       delete s.status[name]
       yield* closeClient(s, name, timeout)
-      if (s.registrations[name] !== registration) return true
-      delete s.registrations[name]
+      if (s.registrations[name]) return true
       delete s.status[name]
       delete s.defs[name]
       delete s.instructions[name]
@@ -724,7 +734,7 @@ const layer = Layer.effect(
       options?: { readonly hidden?: boolean },
     ) {
       const s = yield* InstanceState.get(state)
-      const registration = Object.freeze({ name }) as Registration
+      const registration = makeRegistration(name)
       s.config[name] = mcp
       s.registrations[name] = registration
       if (options?.hidden) s.hidden.add(name)
@@ -746,14 +756,17 @@ const layer = Layer.effect(
       const s = yield* InstanceState.get(state)
       const registration = s.registrations[name]
       const mcp = yield* requireMcpConfig(name)
+      if (!ownsRegistration(s, name, registration)) return
       yield* createAndStore(name, { ...mcp, enabled: true }, registration)
     })
 
     const disconnect = Effect.fn("MCP.disconnect")(function* (name: string) {
-      const mcp = yield* requireMcpConfig(name)
       const s = yield* InstanceState.get(state)
+      const registration = s.registrations[name]
+      const mcp = yield* requireMcpConfig(name)
+      if (!ownsRegistration(s, name, registration)) return
       yield* closeClient(s, name, mcp.timeout)
-      delete s.clients[name]
+      if (!ownsRegistration(s, name, registration)) return
       s.status[name] = { status: "disabled" }
     })
 
@@ -1042,6 +1055,10 @@ const layer = Layer.effect(
           return { status: "failed", error: "Failed to get tools" } satisfies Status
         }
 
+        if (!ownsRegistration(s, mcpName, registration)) {
+          yield* closePromise(() => client.close(), mcpConfig.timeout)
+          return s.status[mcpName] ?? ({ status: "disabled" } satisfies Status)
+        }
         yield* auth.clearOAuthState(mcpName)
         return yield* storeClient(
           s,
@@ -1065,19 +1082,31 @@ const layer = Layer.effect(
 
       const code = yield* Effect.promise(() => callbackPromise)
 
+      if (!ownsRegistration(s, mcpName, registration)) {
+        return s.status[mcpName] ?? ({ status: "disabled" } satisfies Status)
+      }
       const storedState = yield* auth.getOAuthState(mcpName)
       if (storedState !== result.oauthState) {
         yield* auth.clearOAuthState(mcpName)
         throw new Error("OAuth state mismatch - potential CSRF attack")
       }
       yield* auth.clearOAuthState(mcpName)
-      return yield* finishAuth(mcpName, code)
+      return yield* finishAuthOwned(mcpName, code, registration)
     })
 
-    const finishAuth = Effect.fn("MCP.finishAuth")(function* (mcpName: string, authorizationCode: string) {
+    const finishAuthOwned = Effect.fnUntraced(function* (
+      mcpName: string,
+      authorizationCode: string,
+      registration: Registration | undefined,
+    ) {
       const s = yield* InstanceState.get(state)
-      const registration = s.registrations[mcpName]
+      if (!ownsRegistration(s, mcpName, registration)) {
+        return s.status[mcpName] ?? ({ status: "disabled" } satisfies Status)
+      }
       yield* requireMcpConfig(mcpName)
+      if (!ownsRegistration(s, mcpName, registration)) {
+        return s.status[mcpName] ?? ({ status: "disabled" } satisfies Status)
+      }
       const pending = pendingOAuthTransports.get(mcpName)
       if (!pending) throw new Error(`No pending OAuth flow for MCP server: ${mcpName}`)
 
@@ -1093,13 +1122,27 @@ const layer = Layer.effect(
 
       if (error) return { status: "failed", error: `OAuth completion failed: ${error}` } satisfies Status
 
+      if (!ownsRegistration(s, mcpName, registration)) {
+        return s.status[mcpName] ?? ({ status: "disabled" } satisfies Status)
+      }
       yield* Effect.promise(() => pending.provider?.commit() ?? Promise.resolve())
+      if (!ownsRegistration(s, mcpName, registration)) {
+        return s.status[mcpName] ?? ({ status: "disabled" } satisfies Status)
+      }
       yield* auth.clearCodeVerifier(mcpName)
-      pendingOAuthTransports.delete(mcpName)
+      if (!ownsRegistration(s, mcpName, registration)) {
+        return s.status[mcpName] ?? ({ status: "disabled" } satisfies Status)
+      }
+      if (pendingOAuthTransports.get(mcpName) === pending) pendingOAuthTransports.delete(mcpName)
 
       const mcpConfig = yield* requireMcpConfig(mcpName)
 
       return yield* createAndStore(mcpName, { ...mcpConfig, enabled: true }, registration)
+    })
+
+    const finishAuth = Effect.fn("MCP.finishAuth")(function* (mcpName: string, authorizationCode: string) {
+      const s = yield* InstanceState.get(state)
+      return yield* finishAuthOwned(mcpName, authorizationCode, s.registrations[mcpName])
     })
 
     const removeAuth = Effect.fn("MCP.removeAuth")(function* (mcpName: string) {
