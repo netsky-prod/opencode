@@ -166,6 +166,21 @@ export const SessionInputTable = sqliteTable(
   ],
 )
 
+export const SessionCapabilityTable = sqliteTable(
+  "session_capability",
+  {
+    session_id: text()
+      .$type<SessionSchema.ID>()
+      .notNull()
+      .references(() => SessionTable.id, { onDelete: "cascade" }),
+    capability_id: text().notNull(),
+    profiles_json: text().notNull(),
+    state: text({ enum: ["active", "degraded"] }).notNull(),
+    ...Timestamps,
+  },
+  (table) => [primaryKey({ columns: [table.session_id, table.capability_id] })],
+)
+
 export const SessionLoopTable = sqliteTable(
   "session_loop",
   {
