@@ -2,7 +2,7 @@ import fs from "fs/promises"
 import path from "path"
 import { describe, expect, test } from "bun:test"
 import { eq } from "drizzle-orm"
-import { Effect } from "effect"
+import { Deferred, Effect, Fiber } from "effect"
 import { CapabilityCatalog } from "@opencode-ai/core/capability/catalog"
 import { CapabilityManifest } from "@opencode-ai/core/capability/manifest"
 import { CapabilityState } from "@opencode-ai/core/capability/state"
@@ -65,6 +65,20 @@ describe("CapabilityState", () => {
     })
   })
 
+  test("rejects inherited profile names without replacing an existing activation", async () => {
+    await withState(async ({ state }) => {
+      await Effect.runPromise(state.enable({ sessionID: first, id: "browser", profiles: ["default"] }))
+
+      await expect(
+        Effect.runPromise(state.enable({ sessionID: first, id: "browser", profiles: ["constructor"] })),
+      ).rejects.toThrow("Capability profile not found: browser/constructor")
+
+      expect(await Effect.runPromise(state.list(first))).toEqual([
+        { id: "browser", profiles: ["default"], state: "active" },
+      ])
+    })
+  })
+
   test("stores sorted unique profiles and the runtime-reported activation state", async () => {
     await withState(async ({ state }) => {
       await Effect.runPromise(
@@ -90,6 +104,37 @@ describe("CapabilityState", () => {
     })
   })
 
+  test("serializes a same-key disable after an enable has started validation", async () => {
+    await withState(async ({ catalog, db }) => {
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const validationStarted = yield* Deferred.make<void>()
+          const releaseValidation = yield* Deferred.make<void>()
+          const delayedCatalog = {
+            ...catalog,
+            get: (id: string) =>
+              Deferred.succeed(validationStarted, undefined).pipe(
+                Effect.andThen(Deferred.await(releaseValidation)),
+                Effect.andThen(catalog.get(id)),
+              ),
+          }
+          const state = CapabilityState.make({ db, catalog: delayedCatalog })
+          const enable = yield* state
+            .enable({ sessionID: first, id: "browser", profiles: ["default"] })
+            .pipe(Effect.forkScoped)
+          yield* Deferred.await(validationStarted)
+          const disable = yield* state.disable({ sessionID: first, id: "browser" }).pipe(Effect.forkScoped)
+          yield* Effect.yieldNow
+          yield* Deferred.succeed(releaseValidation, undefined)
+          yield* Fiber.join(enable)
+          yield* Fiber.join(disable)
+
+          expect(yield* state.list(first)).toEqual([])
+        }).pipe(Effect.scoped),
+      )
+    })
+  })
+
   test("retains activations whose manifest has disappeared and reports them unavailable", async () => {
     await withState(async ({ capabilityDirectory, state }) => {
       await Effect.runPromise(state.enable({ sessionID: first, id: "browser", profiles: ["default"] }))
@@ -111,6 +156,7 @@ async function withState(
     readonly state: CapabilityState.Interface
     readonly makeState: () => CapabilityState.Interface
     readonly capabilityDirectory: string
+    readonly catalog: CapabilityCatalog.Interface
   }) => Promise<void>,
 ) {
   await using temporary = await tmpdir()
@@ -127,7 +173,7 @@ async function withState(
       const database = yield* Database.Service
       yield* setup(database.db)
       const makeState = () => CapabilityState.make({ db: database.db, catalog })
-      yield* Effect.promise(() => callback({ db: database.db, state: makeState(), makeState, capabilityDirectory }))
+      yield* Effect.promise(() => callback({ db: database.db, state: makeState(), makeState, capabilityDirectory, catalog }))
     }).pipe(Effect.provide(layer), Effect.scoped),
   )
 }

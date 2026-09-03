@@ -4,6 +4,7 @@ import { and, asc, eq } from "drizzle-orm"
 import { Context, Effect, Layer, Schema } from "effect"
 import { Database } from "../database/database"
 import { makeLocationNode } from "../effect/app-node"
+import { KeyedMutex } from "../effect/keyed-mutex"
 import { SessionSchema } from "../session/schema"
 import { SessionCapabilityTable } from "../session/sql"
 import { CapabilityCatalog } from "./catalog"
@@ -53,6 +54,7 @@ export interface Interface {
 export class Service extends Context.Service<Service, Interface>()("@opencode/CapabilityState") {}
 
 export const make = (input: { readonly db: Database.Interface["db"]; readonly catalog: CapabilityCatalog.Interface }): Interface => {
+  const locks = KeyedMutex.makeUnsafe<string>()
   const list = Effect.fn("CapabilityState.list")(function* (sessionID: SessionSchema.ID) {
     const rows = yield* input.db
       .select()
@@ -69,42 +71,48 @@ export const make = (input: { readonly db: Database.Interface["db"]; readonly ca
   })
 
   const enable = Effect.fn("CapabilityState.enable")(function* (value: EnableInput) {
-    const pack = yield* input.catalog.get(value.id)
-    if (!pack) return yield* new ManifestNotFoundError({ id: value.id })
-    const selected = [...new Set(value.profiles)].toSorted()
-    const missing = selected.find((profile) => !(profile in pack.profiles))
-    if (missing) return yield* new ProfileNotFoundError({ id: value.id, profile: missing })
-    const now = Date.now()
-    yield* input.db
-      .transaction((tx) =>
-        tx
-          .insert(SessionCapabilityTable)
-          .values({
-            session_id: value.sessionID,
-            capability_id: value.id,
-            profiles_json: JSON.stringify(selected),
-            state: value.state ?? "active",
-            time_created: now,
-            time_updated: now,
-          })
-          .onConflictDoUpdate({
-            target: [SessionCapabilityTable.session_id, SessionCapabilityTable.capability_id],
-            set: { profiles_json: JSON.stringify(selected), state: value.state ?? "active", time_updated: now },
-          })
-          .run(),
-      )
-      .pipe(Effect.orDie)
+    return yield* locks.withLock(lockKey(value.sessionID, value.id))(
+      Effect.gen(function* () {
+        const pack = yield* input.catalog.get(value.id)
+        if (!pack) return yield* new ManifestNotFoundError({ id: value.id })
+        const selected = [...new Set(value.profiles)].toSorted()
+        const missing = selected.find((profile) => !Object.hasOwn(pack.profiles, profile))
+        if (missing) return yield* new ProfileNotFoundError({ id: value.id, profile: missing })
+        const now = Date.now()
+        yield* input.db
+          .transaction((tx) =>
+            tx
+              .insert(SessionCapabilityTable)
+              .values({
+                session_id: value.sessionID,
+                capability_id: value.id,
+                profiles_json: JSON.stringify(selected),
+                state: value.state ?? "active",
+                time_created: now,
+                time_updated: now,
+              })
+              .onConflictDoUpdate({
+                target: [SessionCapabilityTable.session_id, SessionCapabilityTable.capability_id],
+                set: { profiles_json: JSON.stringify(selected), state: value.state ?? "active", time_updated: now },
+              })
+              .run(),
+          )
+          .pipe(Effect.orDie)
+      }),
+    )
   })
 
   const disable = Effect.fn("CapabilityState.disable")(function* (value: { readonly sessionID: SessionSchema.ID; readonly id: string }) {
-    yield* input.db
-      .transaction((tx) =>
-        tx
-          .delete(SessionCapabilityTable)
-          .where(and(eq(SessionCapabilityTable.session_id, value.sessionID), eq(SessionCapabilityTable.capability_id, value.id)))
-          .run(),
-      )
-      .pipe(Effect.orDie)
+    return yield* locks.withLock(lockKey(value.sessionID, value.id))(
+      input.db
+        .transaction((tx) =>
+          tx
+            .delete(SessionCapabilityTable)
+            .where(and(eq(SessionCapabilityTable.session_id, value.sessionID), eq(SessionCapabilityTable.capability_id, value.id)))
+            .run(),
+        )
+        .pipe(Effect.orDie),
+    )
   })
 
   const status = Effect.fn("CapabilityState.status")(function* (sessionID: SessionSchema.ID) {
@@ -136,4 +144,8 @@ function profiles(value: string): ReadonlyArray<string> {
     throw new Error("Invalid persisted capability profiles")
   }
   return decoded
+}
+
+function lockKey(sessionID: SessionSchema.ID, id: string) {
+  return JSON.stringify([sessionID, id])
 }
