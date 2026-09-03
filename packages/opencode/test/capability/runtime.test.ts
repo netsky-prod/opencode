@@ -71,6 +71,7 @@ it.instance("starts a manifest-owned MCP and exposes immutable canonical definit
     expect(tools.map((tool) => tool.name)).toEqual(["browser_playwright_navigate"])
     expect(Object.keys(yield* mcp.tools())).toEqual([])
     expect(Object.keys(yield* mcp.clients())).toEqual([])
+    expect(Object.keys(yield* mcp.status())).toEqual([])
     expect(Object.isFrozen(tools)).toBe(true)
     expect(Object.isFrozen(tools[0])).toBe(true)
     expect(yield* tools[0]!.call({ url: "https://example.com" })).toMatchObject({
@@ -109,6 +110,27 @@ it.instance(
       },
     },
   },
+)
+
+it.instance("does not remove a pre-existing dynamic MCP after a capability registration collision", () =>
+  Effect.gen(function* () {
+    const existing = yield* serveMcp([{ name: "existing", inputSchema: { type: "object" } }])
+    const candidate = yield* serveMcp([{ name: "candidate", inputSchema: { type: "object" } }])
+    const runtime = yield* CoreCapabilityRuntime.Service
+    const mcp = yield* MCP.Service
+    yield* mcp.add("__capability_browser_playwright", {
+      type: "remote",
+      url: existing.url,
+      oauth: false,
+      timeout: 2_000,
+    })
+
+    const result = yield* runtime.acquire("browser/playwright", definition(candidate.url)).pipe(Effect.exit)
+
+    expect(Exit.isFailure(result)).toBe(true)
+    expect((yield* mcp.status()).__capability_browser_playwright?.status).toBe("connected")
+    expect(Object.keys(yield* mcp.tools())).toEqual(["__capability_browser_playwright_existing"])
+  }),
 )
 
 it.instance("rejects runtime-discovered canonical tool collisions and unregisters the failed server", () =>

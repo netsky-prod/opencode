@@ -118,10 +118,15 @@ function makeMcp(instructions: MCP.ServerInstructions[] = []) {
       instructions: () => Effect.succeed(instructions),
       tools: () => Effect.succeed({}),
       definitions: () => Effect.succeed([]),
+      connection: () => Effect.succeed(undefined),
       prompts: () => Effect.succeed({}),
       resources: () => Effect.succeed({}),
       resourceTemplates: () => Effect.succeed({}),
-      add: () => Effect.succeed({ status: { status: "disabled" as const } }),
+      add: () =>
+        Effect.succeed({
+          status: { status: "disabled" as const },
+          registration: { name: "test" } as MCP.Registration,
+        }),
       remove: () => Effect.void,
       connect: () => Effect.void,
       disconnect: () => Effect.void,

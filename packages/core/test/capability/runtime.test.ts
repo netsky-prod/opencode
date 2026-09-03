@@ -106,6 +106,152 @@ describe("CapabilityRuntime", () => {
     }),
   )
 
+  it.effect("stops an idle resource before starting a replacement definition for the same key", () =>
+    Effect.gen(function* () {
+      const events: string[] = []
+      const runtime = yield* CapabilityRuntime.make({
+        start: (_key, definition) =>
+          Effect.sync(() => {
+            const command = definition.command[0]!
+            events.push(`start:${command}`)
+            return {
+              value: { tools: [] },
+              stop: Effect.sync(() => {
+                events.push(`stop:${command}`)
+              }),
+            }
+          }),
+      })
+      const first = yield* runtime.acquire("browser/playwright", runtimeDefinition({ command: ["first"] }))
+      yield* runtime.release(first)
+
+      yield* runtime.acquire("browser/playwright", runtimeDefinition({ command: ["second"] }))
+
+      expect(events).toEqual(["start:first", "stop:first", "start:second"])
+    }),
+  )
+
+  it.effect("finishes releasing a reference when interrupted while its key is locked", () =>
+    Effect.gen(function* () {
+      const firstCrash = yield* Deferred.make<void, Error>()
+      const restartStarted = yield* Deferred.make<void>()
+      const finishRestart = yield* Deferred.make<void>()
+      let starts = 0
+      const runtime = yield* CapabilityRuntime.make(
+        {
+          start: () =>
+            Effect.gen(function* () {
+              starts++
+              if (starts === 2) {
+                yield* Deferred.succeed(restartStarted, undefined)
+                yield* Deferred.await(finishRestart)
+              }
+              return {
+                value: { tools: [] },
+                stop: Effect.void,
+                ...(starts === 1 ? { exited: Deferred.await(firstCrash) } : {}),
+              }
+            }),
+        },
+        { idleCloseMs: 0 },
+      )
+      const reference = yield* runtime.acquire("browser/playwright", runtimeDefinition())
+      yield* Deferred.fail(firstCrash, new Error("crashed"))
+      yield* Deferred.await(restartStarted)
+      const releasing = yield* runtime.release(reference).pipe(Effect.forkChild)
+      yield* Effect.yieldNow
+      const interrupting = yield* Fiber.interrupt(releasing).pipe(Effect.forkChild)
+      yield* Deferred.succeed(finishRestart, undefined)
+      yield* Fiber.join(interrupting)
+
+      expect((yield* runtime.status("browser/playwright")).references).toBe(0)
+    }),
+  )
+
+  it.effect("rolls back acquired references and interrupts an in-progress start when activation is interrupted", () =>
+    Effect.gen(function* () {
+      const secondStarted = yield* Deferred.make<void>()
+      const secondInterrupted = yield* Deferred.make<void>()
+      const stopped: string[] = []
+      const runtime = yield* CapabilityRuntime.make({
+        start: (key) =>
+          key.endsWith("/second")
+            ? Deferred.succeed(secondStarted, undefined).pipe(
+                Effect.andThen(Effect.never),
+                Effect.onInterrupt(() => Deferred.succeed(secondInterrupted, undefined)),
+              )
+            : Effect.succeed({
+                value: { tools: [] },
+                stop: Effect.sync(() => {
+                  stopped.push(key)
+                }),
+              }),
+      })
+      const activation = yield* runtime
+        .activate([
+          { key: "browser/first", definition: runtimeDefinition({ id: CapabilityManifest.ID.make("first") }) },
+          { key: "browser/second", definition: runtimeDefinition({ id: CapabilityManifest.ID.make("second") }) },
+        ])
+        .pipe(Effect.forkChild)
+      yield* Deferred.await(secondStarted)
+
+      yield* Fiber.interrupt(activation)
+      yield* Deferred.await(secondInterrupted)
+
+      expect(stopped).toEqual(["browser/first"])
+      expect((yield* runtime.status("browser/first")).references).toBe(0)
+    }),
+  )
+
+  it.effect("bounds a never-completing stop during failed activation rollback", () =>
+    Effect.gen(function* () {
+      const runtime = yield* CapabilityRuntime.make({
+        start: (key) =>
+          key.endsWith("/second")
+            ? Effect.fail(new Error("failed"))
+            : Effect.succeed({ value: { tools: [] }, stop: Effect.never }),
+      })
+      const activation = yield* runtime
+        .activate([
+          {
+            key: "browser/first",
+            definition: runtimeDefinition({ id: CapabilityManifest.ID.make("first"), timeoutMs: 100 }),
+          },
+          {
+            key: "browser/second",
+            definition: runtimeDefinition({ id: CapabilityManifest.ID.make("second"), timeoutMs: 100 }),
+          },
+        ])
+        .pipe(Effect.forkChild)
+      yield* Effect.yieldNow
+      yield* TestClock.adjust("101 millis")
+
+      expect(activation.pollUnsafe()?._tag).toBe("Success")
+      expect((yield* runtime.status("browser/first")).state).toBe("stopped")
+    }),
+  )
+
+  it.effect("bounds startup when interrupted acquisition cleanup never completes", () =>
+    Effect.gen(function* () {
+      const runtime = yield* CapabilityRuntime.make({
+        start: () =>
+          Effect.acquireUseRelease(
+            Effect.void,
+            () => Effect.never,
+            () => Effect.never,
+          ),
+      })
+      const acquisition = yield* runtime
+        .acquire("browser/playwright", runtimeDefinition({ timeoutMs: 100 }))
+        .pipe(Effect.forkChild)
+      yield* Effect.yieldNow
+      yield* TestClock.adjust("101 millis")
+
+      expect(acquisition.pollUnsafe()?._tag).toBe("Failure")
+      expect((yield* runtime.status("browser/playwright")).state).toBe("failed")
+    }),
+  )
+
   it.effect("propagates degraded health from an acquired runtime", () =>
     Effect.gen(function* () {
       const runtime = yield* CapabilityRuntime.make({
@@ -135,9 +281,9 @@ describe("CapabilityRuntime", () => {
         start: () =>
           Effect.gen(function* () {
             starts++
-            if (starts === 2) yield* Deferred.succeed(restarted, undefined)
             const crashed = yield* Deferred.make<void, Error>()
             crashes.push(crashed)
+            if (starts === 2) yield* Deferred.succeed(restarted, undefined)
             return {
               value: { tools: [] },
               stop: Effect.void,

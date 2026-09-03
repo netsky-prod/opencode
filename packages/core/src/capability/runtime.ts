@@ -7,6 +7,7 @@ import { KeyedMutex } from "../effect/keyed-mutex"
 import { CapabilityManifest } from "./manifest"
 
 const IDLE_CLOSE = 30_000
+const TIMED_OUT = Symbol("CapabilityRuntime.timedOut")
 
 export type State = "stopped" | "starting" | "healthy" | "degraded" | "failed"
 
@@ -134,7 +135,7 @@ export const make = (
               entry.resource = undefined
               entry.updatedAt = yield* Clock.currentTimeMillis
               entry.diagnostic = redact(exitDiagnostic(exit), entry.definition)
-              yield* resource.stop.pipe(Effect.ignore)
+              yield* stop(resource, entry.definition)
               if (entry.references.size === 0) {
                 entry.state = "stopped"
                 return
@@ -158,15 +159,23 @@ export const make = (
         entry.state = "starting"
         entry.diagnostic = undefined
         entry.updatedAt = yield* Clock.currentTimeMillis
-        const attempt = yield* adapter.start(key, entry.definition).pipe(
-          Effect.timeoutOrElse({
-            duration: entry.definition.timeoutMs ?? 15_000,
-            orElse: () =>
-              Effect.fail(new Error(`Runtime startup timed out after ${entry.definition.timeoutMs ?? 15_000}ms`)),
-          }),
-          Effect.exit,
+        const timeout = entry.definition.timeoutMs ?? 15_000
+        const attempt = yield* boundedExit(adapter.start(key, entry.definition), timeout, (resource) =>
+          stop(resource, entry.definition),
+        ).pipe(
+          Effect.onInterrupt(() =>
+            Effect.gen(function* () {
+              entry.state = "stopped"
+              entry.updatedAt = yield* Clock.currentTimeMillis
+            }),
+          ),
         )
         entry.updatedAt = yield* Clock.currentTimeMillis
+        if (attempt === TIMED_OUT) {
+          entry.state = entry.definition.optional === true ? "degraded" : "failed"
+          entry.diagnostic = `Runtime startup timed out after ${timeout}ms`
+          return undefined
+        }
         if (Exit.isFailure(attempt)) {
           entry.state = entry.definition.optional === true ? "degraded" : "failed"
           entry.diagnostic = redact(causeDiagnostic(attempt.cause), entry.definition)
@@ -182,6 +191,9 @@ export const make = (
         return attempt.value
       })
 
+    const stop = (resource: Resource, definition: CapabilityManifest.Runtime) =>
+      boundedExit(resource.stop.pipe(Effect.ignore), definition.timeoutMs ?? 15_000).pipe(Effect.asVoid)
+
     const close = Effect.fnUntraced(function* (entry: Entry) {
       const resource = entry.resource
       entry.resource = undefined
@@ -191,7 +203,7 @@ export const make = (
       entry.restarts = 0
       entry.generation++
       entry.updatedAt = yield* Clock.currentTimeMillis
-      if (resource) yield* resource.stop.pipe(Effect.ignore)
+      if (resource) yield* stop(resource, entry.definition)
     })
 
     const acquire = Effect.fn("CapabilityRuntime.acquire")(function* (
@@ -208,8 +220,12 @@ export const make = (
               diagnostic: "Runtime key is already active with a different definition",
             })
           }
+          if (current && current.references.size === 0 && current.fingerprint !== fingerprint) {
+            if (current.close) yield* Fiber.interrupt(current.close)
+            yield* close(current)
+          }
           const entry =
-            !current || (current.references.size === 0 && current.fingerprint !== fingerprint)
+            !current || current.fingerprint !== fingerprint
               ? {
                   definition,
                   fingerprint,
@@ -251,30 +267,37 @@ export const make = (
       )
     })
 
-    const drop = Effect.fnUntraced(function* (reference: Reference, immediate: boolean) {
-      const identity = references.get(reference)
-      if (!identity) return
-      references.delete(reference)
-      yield* locks.withLock(identity.key)(
+    const drop = (reference: Reference, immediate: boolean) =>
+      Effect.uninterruptible(
         Effect.gen(function* () {
-          const entry = entries.get(identity.key)
-          if (!entry || !entry.references.delete(identity.token) || entry.references.size > 0) return
-          if (immediate) return yield* close(entry)
-          const generation = entry.generation
-          entry.close = yield* Effect.sleep(idleCloseMs).pipe(
-            Effect.andThen(
-              locks.withLock(identity.key)(
-                Effect.gen(function* () {
-                  if (entry.references.size > 0 || entry.generation !== generation) return
-                  yield* close(entry)
-                }),
-              ),
-            ),
-            Effect.forkIn(scope, { startImmediately: true }),
+          const identity = references.get(reference)
+          if (!identity) return
+          yield* locks.withLock(identity.key)(
+            Effect.gen(function* () {
+              const entry = entries.get(identity.key)
+              if (!entry || !entry.references.delete(identity.token)) {
+                references.delete(reference)
+                return
+              }
+              references.delete(reference)
+              if (entry.references.size > 0) return
+              if (immediate) return yield* close(entry)
+              const generation = entry.generation
+              entry.close = yield* Effect.sleep(idleCloseMs).pipe(
+                Effect.andThen(
+                  locks.withLock(identity.key)(
+                    Effect.gen(function* () {
+                      if (entry.references.size > 0 || entry.generation !== generation) return
+                      yield* close(entry)
+                    }),
+                  ),
+                ),
+                Effect.forkIn(scope, { startImmediately: true, uninterruptible: false }),
+              )
+            }),
           )
         }),
       )
-    })
 
     const release = Effect.fn("CapabilityRuntime.release")(function* (reference: Reference) {
       yield* drop(reference, false)
@@ -282,25 +305,37 @@ export const make = (
 
     const activate = Effect.fn("CapabilityRuntime.activate")(function* (definitions: ReadonlyArray<ActivationInput>) {
       const acquired: Reference[] = []
-      for (const item of definitions) {
-        const result = yield* acquire(item.key, item.definition).pipe(Effect.result)
-        if (Result.isSuccess(result)) {
-          acquired.push(result.success)
-          continue
+      const rollback = Effect.suspend(() => {
+        const releasing = acquired.splice(0).toReversed()
+        return Effect.forEach(releasing, (reference) => drop(reference, true), {
+          concurrency: "unbounded",
+          discard: true,
+        })
+      })
+      return yield* Effect.gen(function* () {
+        for (const item of definitions) {
+          const result = yield* Effect.uninterruptibleMask((restore) =>
+            Effect.gen(function* () {
+              const result = yield* restore(acquire(item.key, item.definition).pipe(Effect.result))
+              if (Result.isSuccess(result)) acquired.push(result.success)
+              return result
+            }),
+          )
+          if (Result.isSuccess(result)) continue
+          yield* rollback
+          return {
+            state: "failed" as const,
+            references: [] as const,
+            diagnostic: result.failure.diagnostic,
+          }
         }
-        yield* Effect.forEach(acquired.toReversed(), (reference) => drop(reference, true), { discard: true })
         return {
-          state: "failed" as const,
-          references: [] as const,
-          diagnostic: result.failure.diagnostic,
+          state: acquired.some((reference) => !reference.available || entries.get(reference.key)?.state === "degraded")
+            ? ("degraded" as const)
+            : ("active" as const),
+          references: Object.freeze(acquired),
         }
-      }
-      return {
-        state: acquired.some((reference) => !reference.available || entries.get(reference.key)?.state === "degraded")
-          ? ("degraded" as const)
-          : ("active" as const),
-        references: Object.freeze(acquired),
-      }
+      }).pipe(Effect.onExit((exit) => (Exit.isFailure(exit) ? rollback : Effect.void)))
     })
 
     yield* Effect.addFinalizer(() =>
@@ -350,4 +385,37 @@ function redact(message: string, definition: CapabilityManifest.Runtime) {
   return Object.values(definition.environment ?? {})
     .filter((value) => value.length > 0)
     .reduce((text, value) => text.replaceAll(value, "[redacted]"), message)
+}
+
+function boundedExit<A, E, R>(
+  effect: Effect.Effect<A, E, R>,
+  duration: number,
+  onLateSuccess: (value: A) => Effect.Effect<void> = () => Effect.void,
+): Effect.Effect<Exit.Exit<A, E> | typeof TIMED_OUT, never, R> {
+  return Effect.uninterruptibleMask((restore) =>
+    Effect.gen(function* () {
+      const fiber = yield* effect.pipe(Effect.forkDetach({ startImmediately: false, uninterruptible: false }))
+      let abandoned = false
+      const abandon = Effect.suspend(() => {
+        if (abandoned) return Effect.void
+        abandoned = true
+        return Effect.gen(function* () {
+          yield* Fiber.await(fiber).pipe(
+            Effect.flatMap((exit) => (Exit.isSuccess(exit) ? onLateSuccess(exit.value) : Effect.void)),
+            Effect.forkDetach({ startImmediately: true, uninterruptible: false }),
+            Effect.asVoid,
+          )
+          yield* Effect.sync(() => fiber.interruptUnsafe())
+        })
+      })
+      const result = yield* restore(
+        Fiber.await(fiber).pipe(
+          Effect.timeoutOrElse({ duration, orElse: () => Effect.succeed(TIMED_OUT) }),
+          Effect.onExit((exit) => (Exit.isFailure(exit) ? abandon : Effect.void)),
+        ),
+      )
+      if (result === TIMED_OUT) yield* abandon
+      return result
+    }),
+  )
 }

@@ -23,24 +23,27 @@ const layer = Layer.effect(
     const runtimes = yield* InstanceState.make(
       Effect.fn("CapabilityRuntime.state")(function* () {
         const bridge = yield* EffectBridge.make()
-        const owners = new Map<string, string>()
+        const owners = new Map<string, MCP.Registration>()
 
         return yield* CoreCapabilityRuntime.make({
           start: (key, definition) => {
             const server = serverName(key)
+            let registration: MCP.Registration | undefined
             const cleanup = Effect.gen(function* () {
-              for (const [name, owner] of owners) if (owner === server) owners.delete(name)
-              yield* mcp.remove(server).pipe(Effect.catchTag("MCP.NotFoundError", () => Effect.void))
+              if (!registration) return
+              for (const [name, owner] of owners) if (owner === registration) owners.delete(name)
+              yield* mcp.remove(registration).pipe(Effect.catchTag("MCP.NotFoundError", () => Effect.void))
             })
             return Effect.gen(function* () {
               if (definition.type !== "mcp") throw new Error(`Unsupported capability runtime type: ${definition.type}`)
               if (runtimeID(key) !== definition.id) throw new Error(`Capability runtime key does not match: ${key}`)
-              if ((yield* mcp.status())[server]) throw new Error(`MCP server name is already registered: ${server}`)
+              if (yield* mcp.connection(server)) throw new Error(`MCP server name is already registered: ${server}`)
               const existing = new Set(Object.keys(yield* mcp.tools()))
               const added = yield* mcp.add(server, mcpConfig(definition), { hidden: true })
+              const owned = added.registration
+              registration = owned
               const connection = "status" in added.status ? added.status : added.status[server]
               if (connection?.status !== "connected") {
-                yield* mcp.remove(server).pipe(Effect.catchTag("MCP.NotFoundError", () => Effect.void))
                 throw new Error(
                   connection?.status === "failed"
                     ? connection.error
@@ -60,13 +63,12 @@ const layer = Layer.effect(
                 (name, index) =>
                   names.indexOf(name) !== index ||
                   existing.has(name) ||
-                  (owners.has(name) && owners.get(name) !== server),
+                  (owners.has(name) && owners.get(name) !== owned),
               )
               if (collision) {
-                yield* mcp.remove(server).pipe(Effect.catchTag("MCP.NotFoundError", () => Effect.void))
                 throw new Error(`Canonical tool name collision: ${collision}`)
               }
-              for (const name of names) owners.set(name, server)
+              for (const name of names) owners.set(name, owned)
 
               const definitions = Object.freeze(
                 upstream.map((definition, index) =>
@@ -80,15 +82,15 @@ const layer = Layer.effect(
               )
               const stop = bridge.run(
                 Effect.gen(function* () {
-                  for (const name of names) if (owners.get(name) === server) owners.delete(name)
-                  yield* mcp.remove(server).pipe(Effect.catchTag("MCP.NotFoundError", () => Effect.void))
+                  for (const name of names) if (owners.get(name) === owned) owners.delete(name)
+                  yield* mcp.remove(owned).pipe(Effect.catchTag("MCP.NotFoundError", () => Effect.void))
                 }),
               )
 
               return {
                 value: Object.freeze({ tools: definitions }),
                 stop,
-                exited: bridge.run(waitForExit(mcp, server)),
+                exited: bridge.run(waitForExit(mcp, owned)),
               }
             }).pipe(Effect.onExit((exit) => (Exit.isFailure(exit) ? cleanup : Effect.void)))
           },
@@ -150,8 +152,8 @@ function runtimeID(key: string) {
   return key.slice(index + 1)
 }
 
-function waitForExit(mcp: MCP.Interface, server: string): Effect.Effect<void> {
+function waitForExit(mcp: MCP.Interface, registration: MCP.Registration): Effect.Effect<void> {
   return Effect.gen(function* () {
-    while ((yield* mcp.status())[server]?.status === "connected") yield* Effect.sleep("1 second")
+    while ((yield* mcp.connection(registration))?.status === "connected") yield* Effect.sleep("1 second")
   })
 }
