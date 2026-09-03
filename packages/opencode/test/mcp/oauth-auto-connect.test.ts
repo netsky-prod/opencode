@@ -5,7 +5,7 @@ import { ListResourcesRequestSchema, ListToolsRequestSchema } from "@modelcontex
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { FSUtil } from "@opencode-ai/core/fs-util"
-import { Effect } from "effect"
+import { Effect, Exit } from "effect"
 import { Config } from "../../src/config/config"
 import { EventV2Bridge } from "../../src/event-v2-bridge"
 import { McpAuth } from "../../src/mcp/auth"
@@ -245,6 +245,34 @@ mcpTest.instance("successful reauthentication commits replacement credentials", 
     expect(entry?.tokens?.accessToken).toBe("replacement-token")
     expect(entry?.clientInfo?.clientId).toBe("replacement-client")
     expect(entry?.serverUrl).toBe(server.url)
+  }),
+)
+
+mcpTest.instance("an old authorization code cannot settle under a replacement registration", () =>
+  Effect.gen(function* () {
+    yield* stopOAuthCallback
+    const firstServer = yield* serveOAuthMcp()
+    const secondServer = yield* serveOAuthMcp()
+    secondServer.allowAnonymous()
+    const mcp = yield* MCP.Service
+    const auth = yield* McpAuth.Service
+    const name = "test-stale-auth-code"
+
+    yield* auth.updateClientInfo(name, { clientId: "old-client" }, firstServer.url)
+    yield* auth.updateTokens(name, { accessToken: "old-token" }, firstServer.url)
+    const first = yield* mcp.add(name, remote(firstServer.url))
+    expect((yield* mcp.startAuth(name)).authorizationUrl).toContain("/authorize")
+
+    yield* mcp.remove(first.registration)
+    const second = yield* mcp.add(name, remote(secondServer.url))
+    const listed = secondServer.listToolsCalls()
+    const settled = yield* Effect.exit(mcp.finishAuth(name, "valid-code"))
+
+    expect(Exit.isFailure(settled)).toBe(true)
+    expect(secondServer.listToolsCalls()).toBe(listed)
+    expect((yield* mcp.connection(second.registration))?.status).toBe("connected")
+    expect((yield* auth.get(name))?.tokens?.accessToken).toBe("old-token")
+    expect((yield* auth.get(name))?.serverUrl).toBe(firstServer.url)
   }),
 )
 
