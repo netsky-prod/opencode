@@ -617,17 +617,23 @@ const layer = Layer.effect(
       listed: MCPToolDef[],
       instructions: string | undefined,
       timeout?: number,
+      registration?: Registration,
     ) {
       const bridge = yield* EffectBridge.make()
+      if (s.registrations[name] !== registration) {
+        yield* closePromise(() => client.close(), timeout)
+        return { status: "connected" } satisfies Status
+      }
       const previous = s.clients[name]
-      s.status[name] = { status: "connected" }
+      const connected = { status: "connected" } satisfies Status
+      s.status[name] = connected
       s.clients[name] = client
       s.defs[name] = listed
       if (instructions) s.instructions[name] = instructions
       else delete s.instructions[name]
       watch(s, name, client, bridge, timeout)
       if (previous) yield* closePromise(() => previous.close(), timeout)
-      return s.status[name]
+      return connected
     })
 
     const status = Effect.fn("MCP.status")(function* () {
@@ -674,18 +680,26 @@ const layer = Layer.effect(
         }))
     })
 
-    const createAndStore = Effect.fn("MCP.createAndStore")(function* (name: string, mcp: ConfigMCPV1.Info) {
+    const createAndStore = Effect.fn("MCP.createAndStore")(function* (
+      name: string,
+      mcp: ConfigMCPV1.Info,
+      registration: Registration | undefined,
+    ) {
       const s = yield* InstanceState.get(state)
       const result = yield* create(name, mcp)
+
+      if (s.registrations[name] !== registration) {
+        if (result.mcpClient) yield* closePromise(() => result.mcpClient!.close(), mcp.timeout)
+        return result.status
+      }
 
       s.status[name] = result.status
       if (!result.mcpClient) {
         yield* closeClient(s, name, mcp.timeout)
-        delete s.clients[name]
         return result.status
       }
 
-      return yield* storeClient(s, name, result.mcpClient, result.defs!, result.instructions, mcp.timeout)
+      return yield* storeClient(s, name, result.mcpClient, result.defs!, result.instructions, mcp.timeout, registration)
     })
 
     const removeOwned = Effect.fnUntraced(function* (s: State, registration: Registration) {
@@ -693,10 +707,14 @@ const layer = Layer.effect(
       if (s.registrations[name] !== registration) return false
       const timeout = s.config[name]?.timeout
       delete s.config[name]
-      delete s.registrations[name]
       s.hidden.delete(name)
-      yield* closeClient(s, name, timeout)
       delete s.status[name]
+      yield* closeClient(s, name, timeout)
+      if (s.registrations[name] !== registration) return true
+      delete s.registrations[name]
+      delete s.status[name]
+      delete s.defs[name]
+      delete s.instructions[name]
       return true
     })
 
@@ -711,7 +729,7 @@ const layer = Layer.effect(
       s.registrations[name] = registration
       if (options?.hidden) s.hidden.add(name)
       else s.hidden.delete(name)
-      return yield* createAndStore(name, mcp).pipe(
+      return yield* createAndStore(name, mcp, registration).pipe(
         Effect.as({ status: s.status, registration }),
         Effect.onExit((exit) =>
           Exit.isFailure(exit) ? removeOwned(s, registration).pipe(Effect.asVoid) : Effect.void,
@@ -725,8 +743,10 @@ const layer = Layer.effect(
     })
 
     const connect = Effect.fn("MCP.connect")(function* (name: string) {
+      const s = yield* InstanceState.get(state)
+      const registration = s.registrations[name]
       const mcp = yield* requireMcpConfig(name)
-      yield* createAndStore(name, { ...mcp, enabled: true })
+      yield* createAndStore(name, { ...mcp, enabled: true }, registration)
     })
 
     const disconnect = Effect.fn("MCP.disconnect")(function* (name: string) {
@@ -1003,6 +1023,8 @@ const layer = Layer.effect(
       mcpName: string,
       onAuthorization?: (authorizationUrl: string) => void,
     ) {
+      const s = yield* InstanceState.get(state)
+      const registration = s.registrations[mcpName]
       const result = yield* startAuth(mcpName)
       if (!result.authorizationUrl) {
         const client = "client" in result ? result.client : undefined
@@ -1020,9 +1042,16 @@ const layer = Layer.effect(
           return { status: "failed", error: "Failed to get tools" } satisfies Status
         }
 
-        const s = yield* InstanceState.get(state)
         yield* auth.clearOAuthState(mcpName)
-        return yield* storeClient(s, mcpName, client, listed, client.getInstructions()?.trim(), mcpConfig.timeout)
+        return yield* storeClient(
+          s,
+          mcpName,
+          client,
+          listed,
+          client.getInstructions()?.trim(),
+          mcpConfig.timeout,
+          registration,
+        )
       }
 
       const callbackPromise = McpOAuthCallback.waitForCallback(result.oauthState, mcpName)
@@ -1046,6 +1075,8 @@ const layer = Layer.effect(
     })
 
     const finishAuth = Effect.fn("MCP.finishAuth")(function* (mcpName: string, authorizationCode: string) {
+      const s = yield* InstanceState.get(state)
+      const registration = s.registrations[mcpName]
       yield* requireMcpConfig(mcpName)
       const pending = pendingOAuthTransports.get(mcpName)
       if (!pending) throw new Error(`No pending OAuth flow for MCP server: ${mcpName}`)
@@ -1068,7 +1099,7 @@ const layer = Layer.effect(
 
       const mcpConfig = yield* requireMcpConfig(mcpName)
 
-      return yield* createAndStore(mcpName, { ...mcpConfig, enabled: true })
+      return yield* createAndStore(mcpName, { ...mcpConfig, enabled: true }, registration)
     })
 
     const removeAuth = Effect.fn("MCP.removeAuth")(function* (mcpName: string) {

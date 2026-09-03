@@ -116,6 +116,22 @@ export const make = (
     const references = new WeakMap<Reference, { readonly key: string; readonly token: object }>()
     const idleCloseMs = options.idleCloseMs ?? IDLE_CLOSE
 
+    const claim = (key: string, entry: Entry) => {
+      const token = {}
+      entry.references.add(token)
+      const reference = Object.freeze({
+        key,
+        get available() {
+          return entry.resource !== undefined
+        },
+        get value() {
+          return entry.resource?.value
+        },
+      }) as Reference
+      references.set(reference, { key, token })
+      return reference
+    }
+
     const status = Effect.fn("CapabilityRuntime.status")(function* (key: string) {
       const entry = entries.get(key)
       if (!entry) {
@@ -154,42 +170,51 @@ export const make = (
       )
     }
 
-    const start = (key: string, entry: Entry): Effect.Effect<Resource | undefined> =>
-      Effect.gen(function* () {
-        entry.state = "starting"
-        entry.diagnostic = undefined
-        entry.updatedAt = yield* Clock.currentTimeMillis
-        const timeout = entry.definition.timeoutMs ?? 15_000
-        const attempt = yield* boundedExit(adapter.start(key, entry.definition), timeout, (resource) =>
-          stop(resource, entry.definition),
-        ).pipe(
-          Effect.onInterrupt(() =>
-            Effect.gen(function* () {
-              entry.state = "stopped"
-              entry.updatedAt = yield* Clock.currentTimeMillis
-            }),
-          ),
-        )
-        entry.updatedAt = yield* Clock.currentTimeMillis
-        if (attempt === TIMED_OUT) {
-          entry.state = entry.definition.optional === true ? "degraded" : "failed"
-          entry.diagnostic = `Runtime startup timed out after ${timeout}ms`
-          return undefined
-        }
-        if (Exit.isFailure(attempt)) {
-          entry.state = entry.definition.optional === true ? "degraded" : "failed"
-          entry.diagnostic = redact(causeDiagnostic(attempt.cause), entry.definition)
-          return undefined
-        }
+    const start = (
+      key: string,
+      entry: Entry,
+      onStarted?: (resource: Resource) => void,
+    ): Effect.Effect<Resource | undefined> =>
+      Effect.uninterruptibleMask((restore) =>
+        Effect.gen(function* () {
+          entry.state = "starting"
+          entry.diagnostic = undefined
+          entry.updatedAt = yield* Clock.currentTimeMillis
+          const timeout = entry.definition.timeoutMs ?? 15_000
+          const attempt = yield* restore(
+            boundedExit(adapter.start(key, entry.definition), timeout, (resource) =>
+              stop(resource, entry.definition),
+            ).pipe(
+              Effect.onInterrupt(() =>
+                Effect.gen(function* () {
+                  entry.state = "stopped"
+                  entry.updatedAt = yield* Clock.currentTimeMillis
+                }),
+              ),
+            ),
+          )
+          entry.updatedAt = yield* Clock.currentTimeMillis
+          if (attempt === TIMED_OUT) {
+            entry.state = entry.definition.optional === true ? "degraded" : "failed"
+            entry.diagnostic = `Runtime startup timed out after ${timeout}ms`
+            return undefined
+          }
+          if (Exit.isFailure(attempt)) {
+            entry.state = entry.definition.optional === true ? "degraded" : "failed"
+            entry.diagnostic = redact(causeDiagnostic(attempt.cause), entry.definition)
+            return undefined
+          }
 
-        entry.resource = attempt.value
-        entry.state = attempt.value.state ?? "healthy"
-        entry.startedAt = entry.updatedAt
-        entry.diagnostic = attempt.value.diagnostic ? redact(attempt.value.diagnostic, entry.definition) : undefined
-        entry.generation++
-        yield* monitor(key, entry, attempt.value, entry.generation)
-        return attempt.value
-      })
+          entry.resource = attempt.value
+          entry.state = attempt.value.state ?? "healthy"
+          entry.startedAt = entry.updatedAt
+          entry.diagnostic = attempt.value.diagnostic ? redact(attempt.value.diagnostic, entry.definition) : undefined
+          entry.generation++
+          onStarted?.(attempt.value)
+          yield* monitor(key, entry, attempt.value, entry.generation)
+          return attempt.value
+        }),
+      )
 
     const stop = (resource: Resource, definition: CapabilityManifest.Runtime) =>
       boundedExit(resource.stop.pipe(Effect.ignore), definition.timeoutMs ?? 15_000).pipe(Effect.asVoid)
@@ -210,7 +235,8 @@ export const make = (
       key: string,
       definition: CapabilityManifest.Runtime,
     ) {
-      return yield* locks.withLock(key)(
+      let claimed: Reference | undefined
+      const acquireLocked = locks.withLock(key)(
         Effect.gen(function* () {
           const fingerprint = definitionFingerprint(definition)
           const current = entries.get(key)
@@ -245,26 +271,20 @@ export const make = (
 
           const resource =
             entry.resource ??
-            (entry.state === "degraded" && entry.definition.optional ? undefined : yield* start(key, entry))
+            (entry.state === "degraded" && entry.definition.optional
+              ? undefined
+              : yield* start(key, entry, () => {
+                  claimed = claim(key, entry)
+                }))
           if (!resource && !definition.optional) {
             return yield* new AcquisitionError({ key, diagnostic: entry.diagnostic ?? "Runtime startup failed" })
           }
 
-          const token = {}
-          entry.references.add(token)
-          const reference = Object.freeze({
-            key,
-            get available() {
-              return entry.resource !== undefined
-            },
-            get value() {
-              return entry.resource?.value
-            },
-          }) as Reference
-          references.set(reference, { key, token })
-          return reference
+          if (!claimed) claimed = yield* Effect.sync(() => claim(key, entry)).pipe(Effect.uninterruptible)
+          return claimed
         }),
       )
+      return yield* acquireLocked.pipe(Effect.onInterrupt(() => (claimed ? drop(claimed, true) : Effect.void)))
     })
 
     const drop = (reference: Reference, immediate: boolean) =>

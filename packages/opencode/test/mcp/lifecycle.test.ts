@@ -14,7 +14,7 @@ import {
   type Tool,
 } from "@modelcontextprotocol/sdk/types.js"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { Cause, Effect, Exit } from "effect"
+import { Cause, Effect, Exit, Fiber } from "effect"
 import type { MCP as MCPNS } from "../../src/mcp/index"
 import { MCP } from "../../src/mcp/index"
 import { McpOAuthCallback } from "../../src/mcp/oauth-callback"
@@ -36,6 +36,8 @@ interface LifecycleServerState {
   resourcePages?: Record<string, Page<{ name: string; uri: string; description?: string }>>
   resourceTemplatePages?: Record<string, Page<{ name: string; uriTemplate: string; description?: string }>>
   listToolsError?: string
+  listToolsStarted?: () => void
+  listToolsWait?: Promise<void>
   requestDelay?: number
   roots?: Array<{ uri: string; name?: string }>
   requests: string[]
@@ -66,10 +68,12 @@ function lifecycleServer(input?: { capabilities?: ServerCapabilities; instructio
         })
 
         if (capabilities.tools) {
-          protocol.setRequestHandler(ListToolsRequestSchema, (request) => {
+          protocol.setRequestHandler(ListToolsRequestSchema, async (request) => {
+            state.listToolsStarted?.()
+            if (state.listToolsWait) await state.listToolsWait
             if (state.listToolsError) throw new Error(state.listToolsError)
             const page = state.toolPages?.[request.params?.cursor ?? "initial"]
-            return Promise.resolve({ tools: page?.items ?? state.tools, nextCursor: page?.nextCursor })
+            return { tools: page?.items ?? state.tools, nextCursor: page?.nextCursor }
           })
         }
         if (capabilities.prompts) {
@@ -341,6 +345,64 @@ it.instance("add() closes the old protocol session when replacing a server", () 
     )
     expect(second.state.aborted).toBe(0)
     expect(Object.keys(yield* mcp.tools())).toEqual(["replace-server_test_tool"])
+  }),
+)
+
+it.instance("a stale concurrent add cannot replace the newer same-name registration", () =>
+  Effect.gen(function* () {
+    const slow = yield* lifecycleServer()
+    const fast = yield* lifecycleServer()
+    slow.state.tools = [{ name: "slow", inputSchema: { type: "object" } }]
+    fast.state.tools = [{ name: "fast", inputSchema: { type: "object" } }]
+    const listed = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    slow.state.listToolsStarted = listed.resolve
+    slow.state.listToolsWait = release.promise
+    const mcp = yield* MCP.Service
+    const first = yield* mcp.add("same-name", remote(slow.url)).pipe(Effect.forkChild)
+    yield* Effect.promise(() => listed.promise)
+
+    const second = yield* mcp.add("same-name", remote(fast.url))
+    release.resolve()
+    yield* Fiber.join(first)
+
+    yield* pollWithTimeout(
+      Effect.sync(() => (slow.state.aborted > 0 ? slow.state.aborted : undefined)),
+      "stale HTTP session was not aborted",
+    )
+    expect(fast.state.aborted).toBe(0)
+    expect(Object.keys(yield* mcp.tools())).toEqual(["same-name_fast"])
+    expect((yield* mcp.connection(second.registration))?.status).toBe("connected")
+  }),
+)
+
+it.instance("an old remove finishing after replacement preserves the newer registration state", () =>
+  Effect.gen(function* () {
+    const firstServer = yield* lifecycleServer()
+    const secondServer = yield* lifecycleServer()
+    firstServer.state.tools = [{ name: "first", inputSchema: { type: "object" } }]
+    secondServer.state.tools = [{ name: "second", inputSchema: { type: "object" } }]
+    const mcp = yield* MCP.Service
+    const first = yield* mcp.add("same-name", remote(firstServer.url))
+    const client = (yield* mcp.clients())["same-name"]!
+    const originalClose = client.close.bind(client)
+    const closing = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    client.close = async () => {
+      closing.resolve()
+      await release.promise
+      await originalClose()
+    }
+    const removing = yield* mcp.remove(first.registration).pipe(Effect.forkChild)
+    yield* Effect.promise(() => closing.promise)
+
+    const second = yield* mcp.add("same-name", remote(secondServer.url))
+    release.resolve()
+    yield* Fiber.join(removing)
+
+    expect(secondServer.state.aborted).toBe(0)
+    expect((yield* mcp.connection(second.registration))?.status).toBe("connected")
+    expect(Object.keys(yield* mcp.tools())).toEqual(["same-name_second"])
   }),
 )
 

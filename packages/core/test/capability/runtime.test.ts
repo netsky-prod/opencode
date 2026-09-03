@@ -1,5 +1,5 @@
 import { describe, expect } from "bun:test"
-import { Deferred, Effect, Fiber } from "effect"
+import { Clock, Deferred, Effect, Fiber } from "effect"
 import * as TestClock from "effect/testing/TestClock"
 import { CapabilityManifest } from "@opencode-ai/core/capability/manifest"
 import { CapabilityRuntime } from "@opencode-ai/core/capability/runtime"
@@ -249,6 +249,54 @@ describe("CapabilityRuntime", () => {
 
       expect(acquisition.pollUnsafe()?._tag).toBe("Failure")
       expect((yield* runtime.status("browser/playwright")).state).toBe("failed")
+    }),
+  )
+
+  it.effect("owns and stops a successful startup interrupted during its handoff", () =>
+    Effect.gen(function* () {
+      const handoff = yield* Deferred.make<void>()
+      const finishHandoff = yield* Deferred.make<void>()
+      const baseClock = yield* Clock.Clock
+      let reads = 0
+      let stops = 0
+      const clock: Clock.Clock = {
+        currentTimeMillisUnsafe: () => baseClock.currentTimeMillisUnsafe(),
+        currentTimeMillis: Effect.suspend(() => {
+          reads++
+          return reads === 3
+            ? Deferred.succeed(handoff, undefined).pipe(
+                Effect.andThen(Deferred.await(finishHandoff)),
+                Effect.as(baseClock.currentTimeMillisUnsafe()),
+              )
+            : Effect.succeed(baseClock.currentTimeMillisUnsafe())
+        }),
+        currentTimeNanosUnsafe: () => baseClock.currentTimeNanosUnsafe(),
+        currentTimeNanos: baseClock.currentTimeNanos,
+        sleep: (duration) => baseClock.sleep(duration),
+      }
+      const runtime = yield* CapabilityRuntime.make(
+        {
+          start: () =>
+            Effect.succeed({
+              value: { tools: [] },
+              stop: Effect.sync(() => {
+                stops++
+              }),
+            }),
+        },
+        { idleCloseMs: 0 },
+      )
+      const acquisition = yield* runtime
+        .acquire("browser/playwright", runtimeDefinition())
+        .pipe(Effect.provideService(Clock.Clock, clock), Effect.forkChild)
+      yield* Deferred.await(handoff)
+      const interrupting = yield* Fiber.interrupt(acquisition).pipe(Effect.forkChild)
+      yield* Effect.yieldNow
+      yield* Deferred.succeed(finishHandoff, undefined)
+      yield* Fiber.join(interrupting)
+
+      expect(stops).toBe(1)
+      expect(yield* runtime.status("browser/playwright")).toMatchObject({ state: "stopped", references: 0 })
     }),
   )
 
