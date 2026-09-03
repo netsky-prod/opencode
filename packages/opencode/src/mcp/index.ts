@@ -9,12 +9,15 @@ import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js"
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js"
 import {
+  CallToolResultSchema,
   ListRootsRequestSchema,
+  type CallToolResult,
   type LoggingMessageNotification,
   LoggingMessageNotificationSchema,
   type Tool as MCPToolDef,
   ToolListChangedNotificationSchema,
 } from "@modelcontextprotocol/sdk/types.js"
+import type { JSONSchema7 } from "@ai-sdk/provider"
 import { Config } from "@/config/config"
 import { ConfigMCPV1 } from "@opencode-ai/core/v1/config/mcp"
 import { NamedError } from "@opencode-ai/core/util/error"
@@ -69,6 +72,12 @@ export const Failed = NamedError.create("MCPFailed", {
 export class NotFoundError extends Schema.TaggedErrorClass<NotFoundError>()("MCP.NotFoundError", {
   name: Schema.String,
 }) {}
+
+export class ToolCallError extends Schema.TaggedErrorClass<ToolCallError>()("MCP.ToolCallError", {
+  name: Schema.String,
+  message: Schema.String,
+}) {}
+export type MCPError = ToolCallError
 
 type MCPClient = Client
 
@@ -141,6 +150,7 @@ interface AuthResult {
 
 interface State {
   config: Record<string, ConfigMCPV1.Info>
+  hidden: Set<string>
   status: Record<string, Status>
   clients: Record<string, MCPClient>
   defs: Record<string, MCPToolDef[]>
@@ -161,17 +171,30 @@ export interface McpTool {
   readonly timeout?: number
 }
 
+export interface Definition {
+  readonly upstreamName: string
+  readonly description: string
+  readonly inputSchema: JSONSchema7
+  readonly call: (input: unknown) => Effect.Effect<CallToolResult, MCPError>
+}
+
 export interface Interface {
   readonly status: () => Effect.Effect<Record<string, Status>>
   readonly clients: () => Effect.Effect<Record<string, MCPClient>>
   readonly instructions: () => Effect.Effect<ServerInstructions[]>
   readonly tools: () => Effect.Effect<Record<string, McpTool>>
+  readonly definitions: (name: string) => Effect.Effect<ReadonlyArray<Definition>>
   readonly prompts: () => Effect.Effect<Record<string, PromptInfo & { client: string }>>
   readonly resources: (clientName?: string) => Effect.Effect<Record<string, ResourceInfo & { client: string }>>
   readonly resourceTemplates: (
     clientName?: string,
   ) => Effect.Effect<Record<string, ResourceTemplateInfo & { client: string }>>
-  readonly add: (name: string, mcp: ConfigMCPV1.Info) => Effect.Effect<{ status: Record<string, Status> | Status }>
+  readonly add: (
+    name: string,
+    mcp: ConfigMCPV1.Info,
+    options?: { readonly hidden?: boolean },
+  ) => Effect.Effect<{ status: Record<string, Status> | Status }>
+  readonly remove: (name: string) => Effect.Effect<void, NotFoundError>
   readonly connect: (name: string) => Effect.Effect<void, NotFoundError>
   readonly disconnect: (name: string) => Effect.Effect<void, NotFoundError>
   readonly getPrompt: (
@@ -496,6 +519,7 @@ const layer = Layer.effect(
         const config = cfg.mcp ?? {}
         const s: State = {
           config: {},
+          hidden: new Set(),
           status: {},
           clients: {},
           defs: {},
@@ -609,13 +633,13 @@ const layer = Layer.effect(
 
     const clients = Effect.fn("MCP.clients")(function* () {
       const s = yield* InstanceState.get(state)
-      return s.clients
+      return Object.fromEntries(Object.entries(s.clients).filter(([name]) => !s.hidden.has(name)))
     })
 
     const instructions = Effect.fn("MCP.instructions")(function* () {
       const s = yield* InstanceState.get(state)
       return Object.entries(s.instructions)
-        .filter(([name]) => s.status[name]?.status === "connected")
+        .filter(([name]) => s.status[name]?.status === "connected" && !s.hidden.has(name))
         .sort(([a], [b]) => a.localeCompare(b))
         .map(([name, item]) => ({
           name,
@@ -638,11 +662,26 @@ const layer = Layer.effect(
       return yield* storeClient(s, name, result.mcpClient, result.defs!, result.instructions, mcp.timeout)
     })
 
-    const add = Effect.fn("MCP.add")(function* (name: string, mcp: ConfigMCPV1.Info) {
+    const add = Effect.fn("MCP.add")(function* (
+      name: string,
+      mcp: ConfigMCPV1.Info,
+      options?: { readonly hidden?: boolean },
+    ) {
       const s = yield* InstanceState.get(state)
       s.config[name] = mcp
+      if (options?.hidden) s.hidden.add(name)
+      else s.hidden.delete(name)
       yield* createAndStore(name, mcp)
       return { status: s.status }
+    })
+
+    const remove = Effect.fn("MCP.remove")(function* (name: string) {
+      const s = yield* InstanceState.get(state)
+      if (!s.config[name]) return yield* new NotFoundError({ name })
+      delete s.config[name]
+      s.hidden.delete(name)
+      yield* closeClient(s, name)
+      delete s.status[name]
     })
 
     const connect = Effect.fn("MCP.connect")(function* (name: string) {
@@ -672,7 +711,7 @@ const layer = Layer.effect(
       const defaultTimeout = cfg.experimental?.mcp_timeout
 
       for (const [clientName, client] of Object.entries(s.clients)) {
-        if (s.status[clientName]?.status !== "connected") continue
+        if (s.status[clientName]?.status !== "connected" || s.hidden.has(clientName)) continue
         const mcpConfig = config[clientName]
         const listed = s.defs[clientName]
         if (!listed) {
@@ -687,6 +726,54 @@ const layer = Layer.effect(
       return result
     })
 
+    const definitions = Effect.fn("MCP.definitions")(function* (name: string) {
+      const s = yield* InstanceState.get(state)
+      const client = s.clients[name]
+      const listed = s.defs[name]
+      if (!client || !listed || s.status[name]?.status !== "connected") return []
+      const cfg = yield* cfgSvc.get()
+      const timeout = requestTimeout(s, name, cfg.mcp?.[name], cfg.experimental?.mcp_timeout)
+      return Object.freeze(
+        listed.map((def) => {
+          const inputSchema = freeze(structuredClone(def.inputSchema)) as JSONSchema7
+          return Object.freeze({
+            upstreamName: def.name,
+            description: def.description ?? "",
+            inputSchema,
+            call: (input: unknown) =>
+              Effect.tryPromise({
+                try: () =>
+                  client.callTool({ name: def.name, arguments: record(input) }, CallToolResultSchema, {
+                    resetTimeoutOnProgress: true,
+                    timeout,
+                    onprogress: () => {},
+                  }),
+                catch: (error) =>
+                  new ToolCallError({
+                    name: def.name,
+                    message: error instanceof Error ? error.message : String(error),
+                  }),
+              }).pipe(
+                Effect.flatMap((result) =>
+                  result.isError
+                    ? Effect.fail(
+                        new ToolCallError({
+                          name: def.name,
+                          message:
+                            result.content
+                              .flatMap((item) => (item.type === "text" ? [item.text] : []))
+                              .filter((text) => text.trim())
+                              .join("\n\n") || "MCP tool returned an error",
+                        }),
+                      )
+                    : Effect.succeed(result),
+                ),
+              ),
+          }) satisfies Definition
+        }),
+      )
+    })
+
     function collectFromConnected<T extends { name: string }>(
       s: State,
       listFn: (c: Client, timeout?: number) => Promise<T[]>,
@@ -698,7 +785,10 @@ const layer = Layer.effect(
         const cfg = yield* cfgSvc.get()
         return yield* Effect.forEach(
           Object.entries(s.clients).filter(
-            ([name]) => s.status[name]?.status === "connected" && (!targetClientName || name === targetClientName),
+            ([name]) =>
+              s.status[name]?.status === "connected" &&
+              !s.hidden.has(name) &&
+              (!targetClientName || name === targetClientName),
           ),
           ([clientName, client]) =>
             McpCatalog.fetch(
@@ -974,10 +1064,12 @@ const layer = Layer.effect(
       clients,
       instructions,
       tools,
+      definitions,
       prompts,
       resources,
       resourceTemplates,
       add,
+      remove,
       connect,
       disconnect,
       getPrompt,
@@ -994,6 +1086,18 @@ const layer = Layer.effect(
 )
 
 export type AuthStatus = "authenticated" | "expired" | "not_authenticated"
+
+function record(input: unknown): Record<string, unknown> {
+  return typeof input === "object" && input !== null && !Array.isArray(input) ? (input as Record<string, unknown>) : {}
+}
+
+function freeze<T>(value: T): T {
+  if (value && typeof value === "object") {
+    Object.freeze(value)
+    for (const child of Object.values(value)) freeze(child)
+  }
+  return value
+}
 
 export const node = LayerNode.make({
   service: Service,
