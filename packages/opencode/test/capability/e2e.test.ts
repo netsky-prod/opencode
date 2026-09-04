@@ -199,7 +199,7 @@ describe("built-in capability end-to-end behavior", () => {
         source: "builtin",
         profiles: { default: {}, diagnostics: {} },
         runtimes: [
-          { id: "playwright", command: ["npx", "-y", "@playwright/mcp@0.0.80"] },
+          { id: "playwright" },
           { id: "chrome-devtools", command: ["npx", "-y", "chrome-devtools-mcp@1.8.0"] },
         ],
       })
@@ -229,6 +229,15 @@ describe("built-in capability end-to-end behavior", () => {
       })
       expect(inspected.output?.structured).toEqual({ url: fixtureUrl, text: "<h1>Verified fixture</h1>" })
       expect(captured.output?.structured).toEqual({ path: screenshot, url: fixtureUrl })
+      expect(browserPack?.runtimes.find((runtime) => runtime.id === "playwright")?.command).toEqual([
+        "npx",
+        "-y",
+        "@playwright/mcp@0.0.80",
+        "--browser",
+        "chromium",
+        "--headless",
+        "--isolated",
+      ])
       expect((yield* Effect.promise(() => Bun.file(screenshot).arrayBuffer())).byteLength).toBe(
         screenshotPng.byteLength,
       )
@@ -327,7 +336,7 @@ function installNpxFixture(directory: string) {
       executable,
       [
         `#!${process.execPath}`,
-        'if (process.argv[2] !== "-y" || process.argv[3] !== "@playwright/mcp@0.0.80") process.exit(64)',
+        'if (JSON.stringify(process.argv.slice(2)) !== JSON.stringify(["-y", "@playwright/mcp@0.0.80", "--browser", "chromium", "--headless", "--isolated"])) process.exit(64)',
         `await import(${JSON.stringify(fixture)})`,
       ].join("\n"),
     )

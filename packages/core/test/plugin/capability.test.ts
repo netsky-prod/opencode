@@ -27,7 +27,10 @@ describe("CapabilityPlugin.Plugin", () => {
             source: "builtin",
             profiles: { default: {}, diagnostics: {} },
             runtimes: [
-              { id: "playwright", command: ["npx", "-y", "@playwright/mcp@0.0.80"] },
+              {
+                id: "playwright",
+                command: ["npx", "-y", "@playwright/mcp@0.0.80", "--browser", "chromium", "--headless", "--isolated"],
+              },
               { id: "chrome-devtools", command: ["npx", "-y", "chrome-devtools-mcp@1.8.0"] },
             ],
           })

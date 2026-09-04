@@ -106,6 +106,52 @@ git diff --check: exit 0
 
 The live Qwen gate was not rerun in this worker, as requested; the root agent owns that rerun after review.
 
+## Live-Gate Browser Launch Fix
+
+The real upstream Playwright MCP connected and listed tools with the original pinned command, but its first navigation attempted the default Google Chrome channel at `/Applications/Google Chrome.app`. Direct validation showed the pinned package works with Playwright-downloaded Chromium when launched with `--browser chromium --headless --isolated`; the isolated flag also enforces the built-in pack's required fresh browser state.
+
+RED was recorded before the manifest change:
+
+```text
+packages/core: bun test test/plugin/capability.test.ts
+0 pass, 1 fail: shipped playwright command lacked --browser chromium --headless --isolated
+
+packages/opencode: bun test test/capability/e2e.test.ts
+0 pass, 1 fail: strict command shim exited 64 and browser runtime schemas were absent
+```
+
+The shipped `browser/default` runtime now uses exactly:
+
+```text
+npx -y @playwright/mcp@0.0.80 --browser chromium --headless --isolated
+```
+
+Both adapter-real command shims require the complete argument list, so a future removal or reordering fails before the fixture server starts.
+
+GREEN evidence:
+
+```text
+packages/core: bun test test/plugin/capability.test.ts
+1 pass, 0 fail
+
+packages/opencode: bun test test/capability/e2e.test.ts
+1 pass, 0 fail
+
+packages/opencode: bun test test/session/prompt.test.ts -t "session tools bridge capability packs|rehydrates persisted capability activation"
+2 pass, 0 fail
+
+packages/core: bun typecheck
+tsgo --noEmit: exit 0
+
+packages/opencode: bun typecheck
+tsgo --noEmit: exit 0
+
+targeted oxlint: 0 errors (pre-existing warnings only)
+Prettier and git diff --check: exit 0
+```
+
+The live Qwen gate was not rerun in this worker, as requested.
+
 ## Live-Gate Bridge Review Fix
 
 The first bridge review found four provider-turn integration defects, each reproduced before its fix at the real legacy `SessionTools.resolve` boundary:
