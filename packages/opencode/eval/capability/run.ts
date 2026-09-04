@@ -11,6 +11,11 @@ import { loadSuite, redact, scoreCase, scoreComparison, type CaseDefinition, typ
 
 export type Mode = "baseline" | "candidate"
 
+export function effectivePrompt(definition: CaseDefinition) {
+  const text = `${definition.requiredCapabilities?.length ? "First inspect the available tools. If capability discovery is unavailable, reply BLOCKED and stop. Do not invent tool names or delegate to an agent named '...'. " : ""}${definition.prompt ?? definition.description ?? definition.id}`
+  return { text, digest: createHash("sha256").update(text).digest("hex") }
+}
+
 export type Arguments = {
   readonly dryRun: boolean
   readonly modes: ReadonlyArray<Mode>
@@ -36,7 +41,7 @@ export type Trace = {
     readonly type?: string
     readonly tool?: string
     readonly text?: string
-    readonly state?: { readonly status?: string; readonly input?: unknown }
+    readonly state?: { readonly status?: string; readonly input?: unknown; readonly output?: unknown }
     readonly tokens?: {
       readonly input?: number
       readonly output?: number
@@ -55,7 +60,9 @@ const traceSchema: z.ZodType<Trace> = z.object({
       type: z.string().optional(),
       tool: z.string().optional(),
       text: z.string().optional(),
-      state: z.object({ status: z.string().optional(), input: z.unknown().optional() }).optional(),
+      state: z
+        .object({ status: z.string().optional(), input: z.unknown().optional(), output: z.unknown().optional() })
+        .optional(),
       tokens: z
         .object({
           input: z.number().optional(),
@@ -76,6 +83,7 @@ type EvaluatedRun = CaseScore & {
   readonly initialToolNames: ReadonlyArray<string>
   readonly finalToolNames: ReadonlyArray<string>
   readonly caseVersion: number
+  readonly promptDigest: string
   readonly mode: Mode
   readonly verifiedOutcomes: ReadonlyArray<{
     readonly criterion: string
@@ -232,28 +240,42 @@ export function buildEvaluationConfig(
 export function readTraceEvidence(trace: ReadonlyArray<Trace>) {
   const toolCalls = trace.flatMap((item) => {
     if (item.type !== "tool_use" || !item.part?.tool) return []
+    const outcome = item.part.tool === "capability_enable" ? activationOutput(item)?.state : undefined
     return [
       {
         name: item.part.tool,
-        status: item.part.state?.status === "completed" ? ("completed" as const) : ("error" as const),
+        status:
+          item.part.state?.status === "completed" && outcome !== "failed" && outcome !== "unsupported"
+            ? ("completed" as const)
+            : ("error" as const),
       },
     ]
   })
   const activations = trace.flatMap((item) => {
     if (item.type !== "tool_use" || item.part?.tool !== "capability_enable" || item.part.state?.status !== "completed")
       return []
+    const output = activationOutput(item)
+    if (!output || !["active", "degraded"].includes(output.state)) return []
     const input = item.part.state.input
-    if (!input || typeof input !== "object") return []
-    const capability = "id" in input && typeof input.id === "string" ? input.id : undefined
-    if (!capability) return []
-    const profile = "profile" in input && typeof input.profile === "string" ? [input.profile] : []
-    const profiles =
-      "profiles" in input && Array.isArray(input.profiles)
-        ? input.profiles.filter((value): value is string => typeof value === "string")
-        : profile
-    return [{ capability, profiles }]
+    if (!isRecord(input) || input.id !== output.id) return []
+    return [{ capability: output.id, profiles: output.profiles }]
   })
   return { toolCalls, activations }
+}
+
+function activationOutput(item: Trace) {
+  const output = item.part?.state?.output
+  const schema = z.object({
+    id: z.string(),
+    state: z.enum(["active", "degraded", "failed", "unsupported"]),
+    profiles: z.array(z.string()),
+  })
+  if (typeof output !== "string") return schema.safeParse(output).data
+  try {
+    return schema.safeParse(JSON.parse(output)).data
+  } catch {
+    return undefined
+  }
 }
 
 export function summarizeProviderSchemas(requestBodies: ReadonlyArray<unknown>) {
@@ -494,7 +516,7 @@ async function evaluate(
         "--auto",
         ...(suite.model.settings.reasoning === true ? ["--thinking"] : []),
         "--",
-        `${definition.requiredCapabilities?.length ? "First inspect the available tools. If capability discovery is unavailable, reply BLOCKED and stop. Do not invent tool names or delegate to an agent named '...'. " : ""}${definition.prompt ?? definition.description ?? definition.id}`,
+        effectivePrompt(definition).text,
       ],
       cwd: path.join(import.meta.dir, "../.."),
       environment: evaluationEnvironment(directory, configDirectory, eventFile),
@@ -545,6 +567,7 @@ async function evaluate(
   return {
     ...score,
     caseVersion: definition.version,
+    promptDigest: effectivePrompt(definition).digest,
     mode,
     verifiedOutcomes,
     toolTrace: toolCalls,
@@ -936,8 +959,29 @@ export async function verifyCriterion(
         isRecord(item.part.state?.input) &&
         item.part.state.input.id === verifier.capability,
     )
-    const failure = attempts.findIndex((item) => item.part?.state?.status === "error")
-    const success = attempts.findIndex((item, index) => index > failure && item.part?.state?.status === "completed")
+    const failure = attempts.findIndex(
+      (item) => item.part?.state?.status === "error" || activationOutput(item)?.state === "failed",
+    )
+    const failedInput = attempts[failure]?.part?.state?.input
+    const profiles = isRecord(failedInput)
+      ? Array.isArray(failedInput.profiles)
+        ? failedInput.profiles
+        : [failedInput.profile ?? "default"]
+      : []
+    const success = attempts.findIndex((item, index) => {
+      const output = activationOutput(item)
+      return (
+        index > failure &&
+        item.part?.state?.status === "completed" &&
+        output?.id === verifier.capability &&
+        output.state === "active" &&
+        profiles.length > 0 &&
+        sameStrings(
+          output.profiles,
+          profiles.filter((value): value is string => typeof value === "string"),
+        )
+      )
+    })
     return {
       criterion: criterion.id,
       passed: failure >= 0 && success > failure,

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import assert from "node:assert/strict"
+import { createHash } from "node:crypto"
 import { Database } from "bun:sqlite"
 import fs from "fs/promises"
 import os from "os"
@@ -8,6 +9,7 @@ import { loadSuite, redact, scoreCase, scoreComparison } from "../../eval/capabi
 import { runFixtureOutcome } from "../../eval/capability/fixture/outcome"
 import {
   buildEvaluationConfig,
+  effectivePrompt,
   parseArguments,
   prepareFixture,
   readTraceEvidence,
@@ -27,6 +29,22 @@ afterEach(async () => {
 })
 
 describe("capability Qwen evaluation scorer", () => {
+  test("fingerprints the exact effective task including shared discovery instructions", () => {
+    const definition = {
+      id: "probe",
+      version: 1,
+      prompt: "Inspect the page.",
+      requiredCapabilities: ["browser"],
+      criteria: [],
+    }
+    const prompt = effectivePrompt(definition)
+    expect(prompt.text).toStartWith("First inspect the available tools.")
+    expect(prompt.text).toEndWith(definition.prompt)
+    expect(prompt.digest).toBe(createHash("sha256").update(prompt.text).digest("hex"))
+    expect(prompt.digest).not.toBe(effectivePrompt({ ...definition, requiredCapabilities: [] }).digest)
+    expect(prompt.digest).not.toBe(effectivePrompt({ ...definition, prompt: "Inspect another page." }).digest)
+  })
+
   test("does not count a model completion claim without externally verified evidence", () => {
     const definition = {
       id: "artifact-proof",
@@ -387,7 +405,11 @@ describe("capability Qwen evaluation runner", () => {
         type: "tool_use",
         part: {
           tool: "capability_enable",
-          state: { status: "completed", input: { id: "dependency-recovery", profile: "default" } },
+          state: {
+            status: "completed",
+            input: { id: "dependency-recovery", profile: "default" },
+            output: JSON.stringify({ id: "dependency-recovery", state: "active", profiles: ["default"] }),
+          },
         },
       },
       {
@@ -408,6 +430,52 @@ describe("capability Qwen evaluation runner", () => {
     ]
 
     expect((await verifyCriterion(dependency, definition, process.cwd(), [], [], [], trace)).passed).toBe(true)
+    const structuredFailure = {
+      type: "tool_use",
+      part: {
+        tool: "capability_enable",
+        state: {
+          status: "completed",
+          input: { id: "dependency-recovery", profile: "default" },
+          output: JSON.stringify({ id: "dependency-recovery", state: "failed", profiles: ["default"] }),
+        },
+      },
+    }
+    const repairOnly = {
+      type: "tool_use",
+      part: {
+        tool: "capability_enable",
+        state: {
+          status: "completed",
+          input: { id: "dependency-recovery", profile: "repair" },
+          output: JSON.stringify({ id: "dependency-recovery", state: "active", profiles: ["repair"] }),
+        },
+      },
+    }
+    expect(
+      (await verifyCriterion(dependency, definition, process.cwd(), [], [], [], [structuredFailure, repairOnly]))
+        .passed,
+    ).toBe(false)
+    expect(
+      (
+        await verifyCriterion(
+          dependency,
+          definition,
+          process.cwd(),
+          [],
+          [],
+          [],
+          [structuredFailure, repairOnly, trace[1]],
+        )
+      ).passed,
+    ).toBe(true)
+    expect(readTraceEvidence([structuredFailure, repairOnly]).activations).toEqual([
+      { capability: "dependency-recovery", profiles: ["repair"] },
+    ])
+    expect(readTraceEvidence([structuredFailure, repairOnly]).toolCalls).toEqual([
+      { name: "capability_enable", status: "error" },
+      { name: "capability_enable", status: "completed" },
+    ])
     expect((await verifyCriterion(checkpoint, definition, directory, [], [], [], trace)).passed).toBe(true)
     await fs.unlink(path.join(directory, "eval.sqlite"))
     expect((await verifyCriterion(checkpoint, definition, directory, [], [], [], trace)).passed).toBe(false)
@@ -497,7 +565,11 @@ describe("capability Qwen evaluation runner", () => {
         timestamp: 20,
         part: {
           tool: "capability_enable",
-          state: { status: "completed", input: { id: "documents", profile: "default" } },
+          state: {
+            status: "completed",
+            input: { id: "documents", profile: "default" },
+            output: JSON.stringify({ id: "documents", state: "active", profiles: ["default"] }),
+          },
         },
       },
     ])

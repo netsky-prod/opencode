@@ -28,6 +28,7 @@ The live runner requires `RUNPOD_QWEN_API_KEY`. It uses model `runpod-qwen/qwen3
 `cases.json` versions the prompts, fixtures, criteria, model, context, sampling settings, and acceptance thresholds. Both arms receive the same task text and equivalent fresh fixture contents. Reports record:
 
 - model ID, declared quantization, server revision when response headers expose it, OpenCode revision, source digest and dirty state, suite version, seed support, and effective settings;
+- per-run SHA-256 `promptDigest` of the exact submitted text, including shared discovery instructions, so different effective tasks cannot silently share a case version;
 - externally verified outcomes and incorrect tool-call count/rate;
 - provider input tokens, the first raw prefill separately, and assistant/reasoning output tokens when supplied by the provider;
 - time to first completed non-management action and total wall time;
