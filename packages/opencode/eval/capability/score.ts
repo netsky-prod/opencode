@@ -1,0 +1,184 @@
+import fs from "fs/promises"
+
+export type Criterion = {
+  readonly id: string
+  readonly description: string
+  readonly verifier?:
+    | { readonly type: "artifact"; readonly path: string; readonly contains?: string }
+    | { readonly type: "tool"; readonly name: string; readonly status?: "completed" | "error" }
+    | { readonly type: "activation"; readonly capability: string; readonly profiles?: ReadonlyArray<string> }
+    | { readonly type: "event"; readonly event: string }
+    | { readonly type: "no-unnecessary-activation" }
+}
+
+export type CaseDefinition = {
+  readonly id: string
+  readonly version: number
+  readonly description?: string
+  readonly prompt?: string
+  readonly coverage?: ReadonlyArray<string>
+  readonly requiredCapabilities?: ReadonlyArray<string>
+  readonly expectedProfiles?: Readonly<Record<string, ReadonlyArray<string>>>
+  readonly criteria: ReadonlyArray<Criterion>
+  readonly fixture?: "proof-capability" | "empty"
+}
+
+export type Suite = {
+  readonly version: number
+  readonly model: {
+    readonly id: string
+    readonly quantization: string
+    readonly serverCommit: string
+    readonly seed: number | null
+    readonly settings: Readonly<Record<string, string | number | boolean | null>>
+  }
+  readonly thresholds: {
+    readonly minimumCompletionGain: number
+    readonly maxDefaultCapabilityTools: number
+  }
+  readonly defaultCapabilityTools: ReadonlyArray<string>
+  readonly cases: ReadonlyArray<CaseDefinition>
+}
+
+export type RunEvidence = {
+  readonly finalText?: string
+  readonly verifiedOutcomes: ReadonlyArray<{
+    readonly criterion: string
+    readonly passed: boolean
+    readonly evidenceRef: string
+  }>
+  readonly toolCalls: ReadonlyArray<{ readonly name: string; readonly status: "completed" | "error" }>
+  readonly activations: ReadonlyArray<{ readonly capability: string; readonly profiles: ReadonlyArray<string> }>
+}
+
+export type CaseScore = {
+  readonly caseID: string
+  readonly completed: boolean
+  readonly verifiedCriteria: number
+  readonly totalCriteria: number
+  readonly incorrectToolCalls: number
+}
+
+export type Comparison = {
+  readonly accepted: boolean
+  readonly baselineCompletionRate: number
+  readonly candidateCompletionRate: number
+  readonly completionGain: number
+  readonly schemaBudgetPassed: boolean
+  readonly explanation: string
+}
+
+export async function loadSuite(file: string): Promise<Suite> {
+  const value = JSON.parse(await fs.readFile(file, "utf8")) as Suite
+  if (value.version !== 1) throw new Error(`Unsupported capability eval suite version: ${value.version}`)
+  if (!Array.isArray(value.cases) || value.cases.length === 0) throw new Error("Capability eval suite has no cases")
+  if (new Set(value.cases.map((item) => item.id)).size !== value.cases.length) {
+    throw new Error("Capability eval suite case IDs must be unique")
+  }
+  if (value.cases.some((item) => !Number.isInteger(item.version) || item.version < 1)) {
+    throw new Error("Capability eval suite cases must have positive integer versions")
+  }
+  if (value.defaultCapabilityTools.length !== value.thresholds.maxDefaultCapabilityTools) {
+    throw new Error("Default capability tool list exceeds or understates the declared schema budget")
+  }
+  return value
+}
+
+export function scoreCase(definition: CaseDefinition, run: RunEvidence): CaseScore {
+  const evidence = new Map(
+    run.verifiedOutcomes
+      .filter((item) => item.passed && item.evidenceRef.trim().length > 0)
+      .map((item) => [item.criterion, item]),
+  )
+  const verifiedCriteria = definition.criteria.filter((criterion) => evidence.has(criterion.id)).length
+  const required = new Set(definition.requiredCapabilities ?? [])
+  const failedCalls = run.toolCalls.filter((call) => call.status === "error").length
+  const unnecessary = run.activations.filter((activation) => !required.has(activation.capability)).length
+  const oversized = run.activations.filter((activation) => {
+    const expected = definition.expectedProfiles?.[activation.capability]
+    if (!expected) return false
+    return !sameStrings(activation.profiles, expected)
+  }).length
+  return {
+    caseID: definition.id,
+    completed: definition.criteria.length > 0 && verifiedCriteria === definition.criteria.length,
+    verifiedCriteria,
+    totalCriteria: definition.criteria.length,
+    incorrectToolCalls: failedCalls + unnecessary + oversized,
+  }
+}
+
+export function scoreComparison(input: {
+  readonly baseline: ReadonlyArray<CaseScore>
+  readonly candidate: ReadonlyArray<CaseScore>
+  readonly thresholds: Suite["thresholds"]
+  readonly defaultCapabilityTools: number
+}): Comparison {
+  const baselineCompletionRate = completionRate(input.baseline)
+  const candidateCompletionRate = completionRate(input.candidate)
+  const completionGain = candidateCompletionRate - baselineCompletionRate
+  const schemaBudgetPassed = input.defaultCapabilityTools <= input.thresholds.maxDefaultCapabilityTools
+  const improved =
+    completionGain >= input.thresholds.minimumCompletionGain && candidateCompletionRate > baselineCompletionRate
+  return {
+    accepted: improved && schemaBudgetPassed,
+    baselineCompletionRate,
+    candidateCompletionRate,
+    completionGain,
+    schemaBudgetPassed,
+    explanation: `Candidate must improve verified completion by at least ${input.thresholds.minimumCompletionGain} and retain no more than ${input.thresholds.maxDefaultCapabilityTools} management schemas. Model claims are never evidence.`,
+  }
+}
+
+export function redact<T>(value: T): T {
+  if (typeof value === "string") return redactText(value) as T
+  if (Array.isArray(value)) return value.map(redact) as T
+  if (!value || typeof value !== "object") return value
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(
+        ([key]) =>
+          !/^(?:authorization|api[_-]?key|access[_-]?token|token|password|secret|client[_-]?secret|credentials?|cookie|headers?|environment|session(?:id)?|raw(?:diagnostics?)?)$/i.test(
+            key,
+          ),
+      )
+      .map(([key, item]) => [key, redact(item)]),
+  ) as T
+}
+
+function redactText(value: string) {
+  if (capabilityEventTypes.has(value)) return value
+  return value
+    .replace(/\bBearer\s+[^\s"']+/gi, "Bearer <redacted>")
+    .replace(/https?:\/\/[^\s"')]+/gi, "<redacted-url>")
+    .replace(/\b(?:[a-z0-9-]+\.)+[a-z]{2,}\b/gi, "<redacted-host>")
+    .replace(/(?:\/Users|\/home|\/root)\/[^\s"']+/g, "<redacted-path>")
+    .replace(/\bses_[a-z0-9_-]+\b/gi, "<redacted-session>")
+    .replace(/\bsessionID\s*[=:]\s*[^\s,"']+/gi, "sessionID=<redacted>")
+}
+
+const capabilityEventTypes = new Set([
+  "capability.activation.degraded",
+  "capability.activation.failed",
+  "capability.activation.requested",
+  "capability.activation.succeeded",
+  "capability.definitions.added",
+  "capability.definitions.removed",
+  "capability.loop.checkpoint.updated",
+  "capability.loop.completion.requested",
+  "capability.runtime.crashed",
+  "capability.runtime.reused",
+  "capability.runtime.started",
+  "capability.runtime.stopped",
+  "capability.schema.estimated",
+  "capability.startup.measured",
+])
+
+function completionRate(results: ReadonlyArray<CaseScore>) {
+  if (results.length === 0) return 0
+  return results.filter((result) => result.completed).length / results.length
+}
+
+function sameStrings(left: ReadonlyArray<string>, right: ReadonlyArray<string>) {
+  return left.length === right.length && left.toSorted().every((value, index) => value === right.toSorted()[index])
+}

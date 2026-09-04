@@ -1,0 +1,204 @@
+{
+  "version": 1,
+  "model": {
+    "id": "runpod-qwen/qwen3.8-27b",
+    "quantization": "UD-IQ2_XXS",
+    "serverCommit": "record-at-run-time",
+    "seed": null,
+    "settings": {
+      "temperature": 0,
+      "reasoning": true,
+      "contextTokens": 262144
+    }
+  },
+  "thresholds": {
+    "minimumCompletionGain": 0.01,
+    "maxDefaultCapabilityTools": 4
+  },
+  "defaultCapabilityTools": ["capability_disable", "capability_enable", "capability_search", "capability_status"],
+  "cases": [
+    {
+      "id": "missing-capability-recognition",
+      "version": 1,
+      "description": "Recognize and activate a previously unseen, smallest sufficient capability before producing a verifiable artifact.",
+      "prompt": "This task requires a dedicated artifact-writing ability that ordinary file, shell, and editing tools must not replace. Inspect the visible tools once. If capability discovery is unavailable, answer BLOCKED immediately and stop. Otherwise discover and activate the smallest relevant capability, then create the proof artifact with exact content CAPABILITY_EVAL_PROOF_V1. Do not claim completion unless the tool confirms it.",
+      "coverage": ["missing-capability-recognition", "smallest-profile-selection", "unnecessary-activation"],
+      "fixture": "proof-capability",
+      "requiredCapabilities": ["eval-proof"],
+      "expectedProfiles": { "eval-proof": ["default"] },
+      "criteria": [
+        {
+          "id": "proof-artifact",
+          "description": "The capability-created artifact has the exact expected content.",
+          "verifier": {
+            "type": "artifact",
+            "path": ".opencode/capabilities/eval-proof/proof.txt",
+            "contains": "CAPABILITY_EVAL_PROOF_V1"
+          }
+        },
+        {
+          "id": "proof-activation",
+          "description": "The exact default profile was activated.",
+          "verifier": { "type": "activation", "capability": "eval-proof", "profiles": ["default"] }
+        },
+        {
+          "id": "no-extra-activation",
+          "description": "No unrelated capability was activated.",
+          "verifier": { "type": "no-unnecessary-activation" }
+        }
+      ]
+    },
+    {
+      "id": "browser",
+      "version": 1,
+      "description": "Use the browser pack to verify a local UI outcome and retain screenshot evidence.",
+      "prompt": "Inspect the local fixture UI, verify the success state, and preserve screenshot evidence.",
+      "coverage": ["browser"],
+      "fixture": "empty",
+      "requiredCapabilities": ["browser"],
+      "expectedProfiles": { "browser": ["default"] },
+      "criteria": [
+        {
+          "id": "browser-evidence",
+          "description": "A verified browser artifact exists.",
+          "verifier": { "type": "activation", "capability": "browser", "profiles": ["default"] }
+        }
+      ]
+    },
+    {
+      "id": "research",
+      "version": 1,
+      "description": "Retrieve and cite a primary source while exposing raw prefill cost separately.",
+      "prompt": "Find the requested primary source, verify the relevant fact, and save a citation-backed result.",
+      "coverage": ["research"],
+      "fixture": "empty",
+      "requiredCapabilities": ["research"],
+      "expectedProfiles": { "research": ["default"] },
+      "criteria": [
+        {
+          "id": "research-source",
+          "description": "A primary-source result was externally verified.",
+          "verifier": { "type": "activation", "capability": "research", "profiles": ["default"] }
+        }
+      ]
+    },
+    {
+      "id": "mobile",
+      "version": 1,
+      "description": "Select only the platform profile required by a mobile fixture.",
+      "prompt": "Inspect the iOS fixture and record simulator/build evidence using only the necessary platform profile.",
+      "coverage": ["mobile", "smallest-profile-selection"],
+      "fixture": "empty",
+      "requiredCapabilities": ["mobile"],
+      "expectedProfiles": { "mobile": ["ios"] },
+      "criteria": [
+        {
+          "id": "mobile-evidence",
+          "description": "Mobile environment evidence was recorded.",
+          "verifier": { "type": "activation", "capability": "mobile", "profiles": ["ios"] }
+        }
+      ]
+    },
+    {
+      "id": "security",
+      "version": 1,
+      "description": "Detect a seeded security finding without unrelated capability activation.",
+      "prompt": "Inspect the fixture for the seeded security issue and preserve machine-verifiable evidence.",
+      "coverage": ["security", "unnecessary-activation"],
+      "fixture": "empty",
+      "requiredCapabilities": ["security"],
+      "expectedProfiles": { "security": ["static"] },
+      "criteria": [
+        {
+          "id": "security-finding",
+          "description": "The seeded finding was externally verified.",
+          "verifier": { "type": "activation", "capability": "security", "profiles": ["static"] }
+        }
+      ]
+    },
+    {
+      "id": "documents",
+      "version": 1,
+      "description": "Extract a known fact from a document and preserve bounded artifact evidence.",
+      "prompt": "Extract and verify the requested document fact, preserving the full extraction as an artifact.",
+      "coverage": ["documents"],
+      "fixture": "empty",
+      "requiredCapabilities": ["documents"],
+      "expectedProfiles": { "documents": ["default"] },
+      "criteria": [
+        {
+          "id": "document-fact",
+          "description": "The extracted fact and artifact were externally verified.",
+          "verifier": { "type": "activation", "capability": "documents", "profiles": ["default"] }
+        }
+      ]
+    },
+    {
+      "id": "github",
+      "version": 1,
+      "description": "Inspect a fixture repository read-only and verify its unchanged state.",
+      "prompt": "Answer the repository question using read-only GitHub/repository inspection and leave the fixture unchanged.",
+      "coverage": ["github"],
+      "fixture": "empty",
+      "requiredCapabilities": ["github"],
+      "expectedProfiles": { "github": ["default"] },
+      "criteria": [
+        {
+          "id": "github-readonly",
+          "description": "Repository answer is correct and the tree remains unchanged.",
+          "verifier": { "type": "activation", "capability": "github", "profiles": ["default"] }
+        }
+      ]
+    },
+    {
+      "id": "deploy",
+      "version": 1,
+      "description": "Build and health-check a disposable local service with externally checked cleanup.",
+      "prompt": "Build the fixture service, verify its health response, then clean up every owned resource.",
+      "coverage": ["deploy"],
+      "fixture": "empty",
+      "requiredCapabilities": ["deploy"],
+      "expectedProfiles": { "deploy": ["core"] },
+      "criteria": [
+        {
+          "id": "deploy-health",
+          "description": "Health and cleanup checks both pass.",
+          "verifier": { "type": "activation", "capability": "deploy", "profiles": ["core"] }
+        }
+      ]
+    },
+    {
+      "id": "checkpoint-evidence",
+      "version": 1,
+      "description": "Update a durable loop checkpoint with evidence instead of an unsupported claim.",
+      "prompt": "Persist a checkpoint containing the verified fact, its evidence reference, and the next action.",
+      "coverage": ["checkpoint-evidence"],
+      "fixture": "empty",
+      "requiredCapabilities": [],
+      "criteria": [
+        {
+          "id": "checkpoint-event",
+          "description": "A checkpoint update event records non-zero evidence.",
+          "verifier": { "type": "event", "event": "capability.loop.checkpoint.updated" }
+        }
+      ]
+    },
+    {
+      "id": "missing-dependency-recovery",
+      "version": 1,
+      "description": "Recover after a missing dependency by following remediation and retrying the smallest profile.",
+      "prompt": "Use capability status to diagnose the missing fixture dependency, apply the supplied local remediation, and retry successfully.",
+      "coverage": ["missing-dependency-recovery"],
+      "fixture": "empty",
+      "requiredCapabilities": ["security"],
+      "expectedProfiles": { "security": ["static"] },
+      "criteria": [
+        {
+          "id": "dependency-recovered",
+          "description": "A failed dependency check is followed by successful activation evidence.",
+          "verifier": { "type": "activation", "capability": "security", "profiles": ["static"] }
+        }
+      ]
+    }
+  ]
+}
