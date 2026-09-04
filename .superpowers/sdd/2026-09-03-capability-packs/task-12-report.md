@@ -2,7 +2,7 @@
 
 ## Status
 
-Implementation, final regression verification, fresh native acceptance, local installation, and ordinary-shell verification are complete. Source integration/push is the remaining release action. The first native acceptance scenario was invalidated by a real execution-driver defect; it remains preserved, not counted as acceptance. The corrected runtime is committed at `41d5490`.
+The capability-packs milestone is complete: implementation, final regression verification, fresh native acceptance, local installation, ordinary-shell verification, and source integration/push. The clean `dev` checkout was fast-forwarded and pushed to `cd08f0ea9fd80377f68cd1b662f58836e34c589f`; the remote ref was independently verified. This completion receipt is documentation-only. The first native acceptance scenario was invalidated by a real execution-driver defect; it remains preserved, not counted as acceptance. The tested runtime remains `41d5490`.
 
 ## Distribution work
 
@@ -52,24 +52,23 @@ Standalone official Node v24.20.0 (archive SHA-256 verified), npm/npx and shell 
 
 The exact tested native binary is installed: version `0.0.0-local-202609042243`, SHA-256 `79a9310d0c46c5a322834a9083f805f6a2fcf743aac5881f0c1c2b19a74a41a0`. Ordinary interactive zsh resolved the installed binary, Node v24.20.0 and npx 12.0.2, connected both existing `gemini-research` and `context7` MCPs, and discovered the existing 16 skills. Source build/install is documented; no new public binary release is claimed.
 
-## Remaining release gates
+## Integration receipt
 
 Final sanitized-evidence review is clear after disambiguating the published build metadata from private session identifiers. Outgoing-history credential checks passed; all outgoing authors/committers use the requested `netsky_prod <netsky_devel@proton.me>` identity.
 
-1. Fast-forward the clean `dev` checkout and push the verified fork; verify the remote revision.
-2. Only then mark the current user goal complete. Peer swarm is the next milestone recorded in `docs/swarm-next.md`, not part of this acceptance.
+The normal pre-push hook initially found the main checkout lacked the newly declared Playwright test dependency (it was installed in the verified worktree). `bun install --frozen-lockfile` synchronized the main checkout without source or lockfile changes. The normal hook then passed all **30/30 workspace typecheck tasks**, and push succeeded. No hook was bypassed. Local and remote `dev` refs matched `cd08f0e`, with a clean worktree. All required release gates are closed. Peer swarm is the next milestone recorded in `docs/swarm-next.md`, not part of this acceptance.
 
 ## Acceptance mapping
 
-| Requirement                                         | Evidence / remaining gate                                                                                             |
-| --------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| Four added default schemas                          | Corrected Task 11 actual provider snapshots and fresh-registry e2e passed                                             |
-| Next-turn browser activation                        | Prompt bridge tests and fresh native activation passed                                                                |
-| Session isolation                                   | Core state/materialization and host runtime tests passed                                                              |
-| Disable removes tools/releases unused runtime       | Ownership/ref-count/stale-call tests and Task 10 real event trace passed                                              |
-| Browser/research end-to-end                         | Slice gates, corrected Task 11 verifier and fresh native candidate 11/11 passed                                       |
-| Durable epistemic checkpoint, restart/wake/complete | Core loop tests, host restart/compaction tests, Task 8 and final native single-conversation completion passed         |
-| Actionable platform status for every pack           | Task 9 per-pack runs; npx and unsupported-platform smoke tests passed                                                 |
-| Permissions and credentials                         | Canonical permissions, denied side-effect and redaction tests, final outgoing-history privacy and author checks passed |
-| Better completion with compact default surface      | Small corrected proof/recovery A/B passed; benchmark limitation retained                                              |
-| Documented installable fork                         | Embedded payload, final native build, exact binary installation and ordinary-shell checks passed; push pending        |
+| Requirement                                         | Evidence / remaining gate                                                                                                   |
+| --------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| Four added default schemas                          | Corrected Task 11 actual provider snapshots and fresh-registry e2e passed                                                   |
+| Next-turn browser activation                        | Prompt bridge tests and fresh native activation passed                                                                      |
+| Session isolation                                   | Core state/materialization and host runtime tests passed                                                                    |
+| Disable removes tools/releases unused runtime       | Ownership/ref-count/stale-call tests and Task 10 real event trace passed                                                    |
+| Browser/research end-to-end                         | Slice gates, corrected Task 11 verifier and fresh native candidate 11/11 passed                                             |
+| Durable epistemic checkpoint, restart/wake/complete | Core loop tests, host restart/compaction tests, Task 8 and final native single-conversation completion passed               |
+| Actionable platform status for every pack           | Task 9 per-pack runs; npx and unsupported-platform smoke tests passed                                                       |
+| Permissions and credentials                         | Canonical permissions, denied side-effect and redaction tests, final outgoing-history privacy and author checks passed      |
+| Better completion with compact default surface      | Small corrected proof/recovery A/B passed; benchmark limitation retained                                                    |
+| Documented installable fork                         | Embedded payload, final build/install, ordinary-shell checks, normal pre-push typechecks and remote-ref verification passed |
