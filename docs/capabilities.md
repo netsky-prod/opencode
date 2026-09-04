@@ -8,7 +8,7 @@ Ask the agent to discover a capability, inspect its status, enable the smallest 
 
 | Pack      | Profiles                 | Runtime and prerequisites                                                                                     |
 | --------- | ------------------------ | ------------------------------------------------------------------------------------------------------------- |
-| browser   | default, diagnostics     | Pinned Playwright MCP or Chrome DevTools MCP; Node and an installed browser                                   |
+| browser   | default, diagnostics     | Pinned Playwright MCP or Chrome DevTools MCP; Node, npm/npx, and an installed browser                          |
 | research  | default                  | Federated Research MCP and Context7; configured endpoint and authorization                                    |
 | mobile    | ios, android             | Guidance and probes for Xcode/simulator, Flutter, adb; iOS is macOS-only                                      |
 | security  | static, dynamic          | Guidance and probes for Semgrep, CodeQL, Gitleaks, OSV, Trivy; ZAP, Nuclei, Schemathesis, Nmap, mitmproxy, k6 |

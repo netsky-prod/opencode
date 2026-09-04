@@ -322,7 +322,8 @@ describe("LoopTool", () => {
       ]) {
         expect(result).toEqual({
           type: "error",
-          value: "Adaptive completion requires verified acceptance criteria with evidence",
+          value:
+            "Adaptive completion requires verified acceptance criteria with evidence: each acceptanceCriteria entry must exactly match a verifiedFacts claim with at least one evidence reference. Copy the criterion text verbatim; pause if it is unverified. Do not weaken criteria to hide missing work.",
         })
         expect(JSON.stringify(result)).not.toContain("secret://must-not-leak")
       }

@@ -43,6 +43,41 @@ const it = testEffect(Layer.empty)
 
 describe("operational capability packs", () => {
   it.live(
+    "reports a missing npx prerequisite even when Node is available",
+    Effect.gen(function* () {
+      reset()
+      const test = yield* TestInstance
+      const fixture = yield* installExecutables(test.directory, ["node", "npx"], new Set(["npx"]))
+      yield* environment({
+        PATH: `${fixture.bin}${path.delimiter}${process.env.PATH ?? ""}`,
+        PROBE_MARKERS: fixture.markers,
+      })
+      const catalog = yield* makeCatalog(test.directory)
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          yield* loadBuiltins(catalog)
+          const registry = yield* ToolRegistry.Service
+          const tools = yield* registry.materialize(sessionID)
+          expect(yield* settle(tools, "capability_enable", { id: "browser", profiles: ["default"] })).toMatchObject({
+            result: {
+              type: "json",
+              value: {
+                state: "failed",
+                dependencies: expect.arrayContaining([
+                  expect.objectContaining({ id: "node", state: "available" }),
+                  expect.objectContaining({ id: "npx", state: "missing" }),
+                ]),
+                remediation: expect.arrayContaining([expect.stringContaining("npx")]),
+              },
+            },
+          })
+          expect(activations.get(sessionID) ?? []).toEqual([])
+        }).pipe(Effect.provide(makeLayer(test.directory, catalog))),
+      )
+    }).pipe(withTmpdirInstance()),
+  )
+
+  it.live(
     "uses real stub probes to report Linux iOS unsupported and Android degraded",
     Effect.gen(function* () {
       reset()

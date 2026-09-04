@@ -549,7 +549,10 @@ const layer = Layer.effect(
           checkpoint.acceptanceCriteria.some((criterion) => (verified.get(criterion) ?? 0) === 0)
         ) {
           return yield* Effect.fail(
-            new InvalidInput({ message: "Adaptive completion requires verified acceptance criteria with evidence" }),
+            new InvalidInput({
+              message:
+                "Adaptive completion requires verified acceptance criteria with evidence: each acceptanceCriteria entry must exactly match a verifiedFacts claim with at least one evidence reference. Copy the criterion text verbatim; pause if it is unverified. Do not weaken criteria to hide missing work.",
+            }),
           )
         }
       }

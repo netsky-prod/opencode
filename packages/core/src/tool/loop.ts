@@ -21,9 +21,21 @@ export const names = [
 
 const CheckpointFields = {
   objective: Schema.optional(Schema.String),
-  acceptanceCriteria: Schema.optional(Schema.Array(Schema.String)),
+  acceptanceCriteria: Schema.optional(Schema.Array(Schema.String)).annotate({
+    description:
+      "Completion criteria. Each entry must exactly match a verifiedFacts claim with evidence before adaptive completion. Preserve the agreed scope; do not weaken criteria to hide missing work.",
+  }),
   verifiedFacts: Schema.optional(
-    Schema.Array(Schema.Struct({ claim: Schema.String, evidence: Schema.optional(Schema.Array(Schema.String)) })),
+    Schema.Array(
+      Schema.Struct({
+        claim: Schema.String.annotate({
+          description: "Verified fact. When verifying an acceptance criterion, copy its text verbatim.",
+        }),
+        evidence: Schema.optional(Schema.Array(Schema.String)).annotate({
+          description: "References to actual verification evidence. At least one is required for each completed criterion.",
+        }),
+      }),
+    ),
   ),
   observations: Schema.optional(Schema.Array(Schema.String)),
   inferences: Schema.optional(

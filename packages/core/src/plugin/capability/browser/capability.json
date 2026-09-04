@@ -40,6 +40,10 @@
     {
       "id": "node",
       "check": ["node", "--version"]
+    },
+    {
+      "id": "npx",
+      "check": ["npx", "--version"]
     }
   ]
 }
