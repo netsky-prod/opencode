@@ -199,6 +199,7 @@ export const SessionLoopTable = sqliteTable(
     pending_message_id: text().$type<SessionMessage.ID>(),
     reason: text(),
     last_error: text(),
+    checkpoint_json: text(),
     failure_count: integer().notNull().default(0),
     lease_owner: text(),
     lease_expires_at: integer(),

@@ -20,6 +20,40 @@ export type Mode = typeof Mode.Type
 export const State = Schema.Literals(["active", "paused", "completed"])
 export type State = typeof State.Type
 
+export type Checkpoint = {
+  readonly objective: string
+  readonly acceptanceCriteria: ReadonlyArray<string>
+  readonly verifiedFacts: ReadonlyArray<{ readonly claim: string; readonly evidence?: ReadonlyArray<string> }>
+  readonly observations: ReadonlyArray<string>
+  readonly inferences: ReadonlyArray<{ readonly claim: string; readonly confidence: "low" | "medium" | "high" }>
+  readonly assumptions: ReadonlyArray<string>
+  readonly decisions: ReadonlyArray<{ readonly decision: string; readonly reason: string }>
+  readonly blockers: ReadonlyArray<string>
+  readonly artifacts: ReadonlyArray<string>
+  readonly nextAction: string
+  readonly updatedAt: number
+}
+
+export type CheckpointPatch = {
+  readonly objective?: string
+  readonly acceptanceCriteria?: ReadonlyArray<string>
+  readonly verifiedFacts?: ReadonlyArray<{ readonly claim: string; readonly evidence?: ReadonlyArray<string> }>
+  readonly observations?: ReadonlyArray<string>
+  readonly inferences?: ReadonlyArray<{ readonly claim: string; readonly confidence: "low" | "medium" | "high" }>
+  readonly assumptions?: ReadonlyArray<string>
+  readonly decisions?: ReadonlyArray<{ readonly decision: string; readonly reason: string }>
+  readonly blockers?: ReadonlyArray<string>
+  readonly artifacts?: ReadonlyArray<string>
+  readonly nextAction?: string
+}
+
+export class CheckpointDiagnostic extends Schema.TaggedErrorClass<CheckpointDiagnostic>()(
+  "SessionLoop.CheckpointDiagnostic",
+  {
+    message: Schema.String,
+  },
+) {}
+
 export type Info = {
   readonly id: ID
   readonly sessionID: SessionSchema.ID
@@ -33,6 +67,8 @@ export type Info = {
   readonly pendingMessageID?: SessionMessage.ID
   readonly reason?: string
   readonly lastError?: string
+  readonly checkpoint?: Checkpoint
+  readonly checkpointDiagnostic?: CheckpointDiagnostic
   readonly failureCount: number
   readonly timeCreated: number
   readonly timeUpdated: number
@@ -57,6 +93,7 @@ type CreateInput = {
   readonly mode: Mode
   readonly intervalMs?: number
   readonly reason?: string
+  readonly checkpoint?: CheckpointPatch
   readonly now?: number
 }
 
@@ -66,6 +103,16 @@ type UpdateInput = {
   readonly prompt?: string
   readonly intervalMs?: number
   readonly nextRunAt?: number
+  readonly state?: State
+  readonly reason?: string | null
+  readonly checkpoint?: CheckpointPatch
+  readonly now?: number
+}
+
+type CheckpointInput = {
+  readonly sessionID: SessionSchema.ID
+  readonly id: ID
+  readonly checkpoint: CheckpointPatch
   readonly state?: State
   readonly reason?: string | null
   readonly now?: number
@@ -83,6 +130,7 @@ export interface Interface {
   readonly get: (input: OwnedInput) => Effect.Effect<Info, NotFound>
   readonly list: (sessionID: SessionSchema.ID) => Effect.Effect<ReadonlyArray<Info>>
   readonly update: (input: UpdateInput) => Effect.Effect<Info, InvalidInput | NotFound>
+  readonly checkpoint: (input: CheckpointInput) => Effect.Effect<Info, InvalidInput | NotFound>
   readonly remove: (input: OwnedInput) => Effect.Effect<boolean, NotFound>
   readonly claimDue: (input: {
     readonly owner: string
@@ -120,10 +168,156 @@ const fromRow = (row: typeof SessionLoopTable.$inferSelect): Info => ({
   ...(row.pending_message_id === null ? {} : { pendingMessageID: SessionMessage.ID.make(row.pending_message_id) }),
   ...(row.reason === null ? {} : { reason: row.reason }),
   ...(row.last_error === null ? {} : { lastError: row.last_error }),
+  ...decodeCheckpoint(row.checkpoint_json),
   failureCount: row.failure_count,
   timeCreated: row.time_created,
   timeUpdated: row.time_updated,
 })
+
+const emptyCheckpoint = (updatedAt: number): Checkpoint => ({
+  objective: "",
+  acceptanceCriteria: [],
+  verifiedFacts: [],
+  observations: [],
+  inferences: [],
+  assumptions: [],
+  decisions: [],
+  blockers: [],
+  artifacts: [],
+  nextAction: "",
+  updatedAt,
+})
+
+const normalizeString = (value: string, field: string, required = true) => {
+  const normalized = value.trim()
+  if (required && normalized.length === 0)
+    throw new CheckpointDiagnostic({ message: `checkpoint ${field} cannot be empty` })
+  if (normalized.length > 4_000)
+    throw new CheckpointDiagnostic({ message: `checkpoint ${field} exceeds 4,000 characters` })
+  return normalized
+}
+
+const normalizeStrings = (values: ReadonlyArray<string>, field: string) => {
+  if (values.length > 50) throw new CheckpointDiagnostic({ message: `checkpoint ${field} exceeds 50 items` })
+  return [...new Set(values.map((value) => normalizeString(value, field)))]
+}
+
+const normalizeCheckpoint = (
+  current: Checkpoint | undefined,
+  patch: CheckpointPatch,
+  updatedAt: number,
+): Checkpoint => {
+  try {
+    const base = current ?? emptyCheckpoint(updatedAt)
+    if (
+      (patch.verifiedFacts !== undefined && patch.verifiedFacts.length > 50) ||
+      (patch.inferences !== undefined && patch.inferences.length > 50) ||
+      (patch.decisions !== undefined && patch.decisions.length > 50)
+    ) {
+      throw new CheckpointDiagnostic({ message: "checkpoint exceeds 50 items" })
+    }
+    const checkpoint: Checkpoint = {
+      objective: patch.objective === undefined ? base.objective : normalizeString(patch.objective, "objective", false),
+      acceptanceCriteria:
+        patch.acceptanceCriteria === undefined
+          ? base.acceptanceCriteria
+          : normalizeStrings(patch.acceptanceCriteria, "acceptance criteria"),
+      verifiedFacts:
+        patch.verifiedFacts === undefined
+          ? base.verifiedFacts
+          : Array.from(
+              patch.verifiedFacts
+                .reduce((facts, fact) => {
+                  const claim = normalizeString(fact.claim, "verified fact")
+                  const existing = facts.get(claim) ?? []
+                  const evidence =
+                    fact.evidence === undefined
+                      ? existing
+                      : [...existing, ...normalizeStrings(fact.evidence, "evidence")]
+                  facts.set(claim, [...new Set(evidence)])
+                  return facts
+                }, new Map<string, string[]>())
+                .entries(),
+              ([claim, evidence]) => ({ claim, ...(evidence.length === 0 ? {} : { evidence }) }),
+            ),
+      observations:
+        patch.observations === undefined ? base.observations : normalizeStrings(patch.observations, "observations"),
+      inferences:
+        patch.inferences === undefined
+          ? base.inferences
+          : Array.from(
+              new Map(
+                patch.inferences.map((inference) => [
+                  normalizeString(inference.claim, "inference"),
+                  { claim: normalizeString(inference.claim, "inference"), confidence: inference.confidence },
+                ]),
+              ).values(),
+            ),
+      assumptions:
+        patch.assumptions === undefined ? base.assumptions : normalizeStrings(patch.assumptions, "assumptions"),
+      decisions:
+        patch.decisions === undefined
+          ? base.decisions
+          : Array.from(
+              new Map(
+                patch.decisions.map((decision) => [
+                  normalizeString(decision.decision, "decision"),
+                  {
+                    decision: normalizeString(decision.decision, "decision"),
+                    reason: normalizeString(decision.reason, "decision reason"),
+                  },
+                ]),
+              ).values(),
+            ),
+      blockers: patch.blockers === undefined ? base.blockers : normalizeStrings(patch.blockers, "blockers"),
+      artifacts: patch.artifacts === undefined ? base.artifacts : normalizeStrings(patch.artifacts, "artifacts"),
+      nextAction:
+        patch.nextAction === undefined ? base.nextAction : normalizeString(patch.nextAction, "next action", false),
+      updatedAt,
+    }
+    if (checkpoint.verifiedFacts.length > 50 || checkpoint.inferences.length > 50 || checkpoint.decisions.length > 50) {
+      throw new CheckpointDiagnostic({ message: "checkpoint exceeds 50 items" })
+    }
+    const evidence = checkpoint.verifiedFacts.flatMap((fact) => fact.evidence ?? [])
+    if (new Set(evidence).size > 100)
+      throw new CheckpointDiagnostic({ message: "checkpoint exceeds 100 evidence URLs" })
+    if (new TextEncoder().encode(JSON.stringify(checkpoint)).length > 128 * 1024) {
+      throw new CheckpointDiagnostic({ message: "checkpoint exceeds 128 KiB" })
+    }
+    return checkpoint
+  } catch (error) {
+    if (error instanceof CheckpointDiagnostic) throw error
+    throw new CheckpointDiagnostic({ message: "checkpoint has invalid fields" })
+  }
+}
+
+const decodeCheckpoint = (value: string | null): Pick<Info, "checkpoint" | "checkpointDiagnostic"> => {
+  if (value === null) return {}
+  try {
+    const checkpoint = JSON.parse(value) as Checkpoint
+    if (
+      typeof checkpoint !== "object" ||
+      checkpoint === null ||
+      typeof checkpoint.objective !== "string" ||
+      !Array.isArray(checkpoint.acceptanceCriteria) ||
+      !Array.isArray(checkpoint.verifiedFacts) ||
+      !Array.isArray(checkpoint.observations) ||
+      !Array.isArray(checkpoint.inferences) ||
+      !Array.isArray(checkpoint.assumptions) ||
+      !Array.isArray(checkpoint.decisions) ||
+      !Array.isArray(checkpoint.blockers) ||
+      !Array.isArray(checkpoint.artifacts) ||
+      typeof checkpoint.nextAction !== "string" ||
+      !Number.isSafeInteger(checkpoint.updatedAt)
+    ) {
+      throw new Error("invalid checkpoint")
+    }
+    normalizeCheckpoint(undefined, checkpoint, checkpoint.updatedAt)
+    return { checkpoint }
+  } catch {
+    return { checkpointDiagnostic: new CheckpointDiagnostic({ message: "Stored loop checkpoint is invalid" }) }
+  }
+}
 
 const now = (input?: number) =>
   input === undefined ? DateTime.now.pipe(Effect.map(DateTime.toEpochMillis)) : Effect.succeed(input)
@@ -179,6 +373,16 @@ const layer = Layer.effect(
       if (!session) return yield* Effect.fail(new SessionNotFound({ sessionID: input.sessionID }))
 
       const timestamp = yield* now(input.now)
+      const checkpoint =
+        input.checkpoint === undefined
+          ? undefined
+          : yield* Effect.try({
+              try: () => normalizeCheckpoint(undefined, input.checkpoint!, timestamp),
+              catch: (error) =>
+                new InvalidInput({
+                  message: error instanceof CheckpointDiagnostic ? error.message : "checkpoint has invalid fields",
+                }),
+            })
       const row = yield* db
         .insert(SessionLoopTable)
         .values({
@@ -190,6 +394,7 @@ const layer = Layer.effect(
           state: "active",
           next_run_at: initialNextRun(input.mode, timestamp, input.intervalMs),
           reason: input.reason?.trim() || null,
+          checkpoint_json: checkpoint === undefined ? null : JSON.stringify(checkpoint),
           time_created: timestamp,
           time_updated: timestamp,
         })
@@ -219,7 +424,8 @@ const layer = Layer.effect(
     })
 
     const update = Effect.fn("SessionLoop.update")(function* (input: UpdateInput) {
-      const current = fromRow(yield* owned(input))
+      const currentRow = yield* owned(input)
+      const current = fromRow(currentRow)
       const timestamp = yield* now(input.now)
       const prompt = input.prompt === undefined ? current.prompt : yield* normalizePrompt(input.prompt)
       const intervalMs = input.intervalMs ?? current.intervalMs
@@ -240,6 +446,35 @@ const layer = Layer.effect(
               ? initialNextRun(mode, timestamp, intervalMs)
               : current.nextRunAt
       const reason = input.reason === undefined ? current.reason : input.reason?.trim() || null
+      const checkpoint =
+        input.checkpoint === undefined
+          ? current.checkpoint
+          : yield* Effect.try({
+              try: () => normalizeCheckpoint(current.checkpoint, input.checkpoint!, timestamp),
+              catch: (error) =>
+                new InvalidInput({
+                  message: error instanceof CheckpointDiagnostic ? error.message : "checkpoint has invalid fields",
+                }),
+            })
+      if (state === "completed" && current.mode === "adaptive") {
+        if (input.reason === undefined || reason === undefined) {
+          return yield* Effect.fail(new InvalidInput({ message: "Adaptive completion requires a reason" }))
+        }
+        if (input.checkpoint === undefined || checkpoint === undefined) {
+          return yield* Effect.fail(
+            new InvalidInput({ message: "Adaptive completion requires a final checkpoint update" }),
+          )
+        }
+        const verified = new Map(checkpoint.verifiedFacts.map((fact) => [fact.claim, fact.evidence?.length ?? 0]))
+        if (
+          checkpoint.acceptanceCriteria.length === 0 ||
+          checkpoint.acceptanceCriteria.some((criterion) => (verified.get(criterion) ?? 0) === 0)
+        ) {
+          return yield* Effect.fail(
+            new InvalidInput({ message: "Adaptive completion requires verified acceptance criteria with evidence" }),
+          )
+        }
+      }
 
       const row = yield* db
         .update(SessionLoopTable)
@@ -250,6 +485,7 @@ const layer = Layer.effect(
           state,
           next_run_at: nextRunAt,
           reason,
+          checkpoint_json: input.checkpoint === undefined ? currentRow.checkpoint_json : JSON.stringify(checkpoint),
           ...(state === "active" ? {} : { lease_owner: null, lease_expires_at: null }),
           time_updated: timestamp,
         })
@@ -259,6 +495,10 @@ const layer = Layer.effect(
         .pipe(Effect.orDie)
       if (!row) return yield* Effect.fail(new NotFound({ sessionID: input.sessionID, id: input.id }))
       return fromRow(row)
+    })
+
+    const checkpoint = Effect.fn("SessionLoop.checkpoint")(function* (input: CheckpointInput) {
+      return yield* update(input)
     })
 
     const remove = Effect.fn("SessionLoop.remove")(function* (input: OwnedInput) {
@@ -454,7 +694,18 @@ const layer = Layer.effect(
       return reconciled
     })
 
-    return Service.of({ create, get, list, update, remove, claimDue, markAdmitted, recordFailure, reconcilePending })
+    return Service.of({
+      create,
+      get,
+      list,
+      update,
+      checkpoint,
+      remove,
+      claimDue,
+      markAdmitted,
+      recordFailure,
+      reconcilePending,
+    })
   }),
 )
 

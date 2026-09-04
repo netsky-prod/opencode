@@ -1,9 +1,9 @@
 {
   "version": "7",
   "dialect": "sqlite",
-  "id": "548d991c-a62e-4ee3-9f7e-46ec3b9f99e5",
+  "id": "588e43be-95d3-47b9-b0f1-d9c2e45115d4",
   "prevIds": [
-    "1202a59e-1575-46cc-824b-e95626c634d0"
+    "548d991c-a62e-4ee3-9f7e-46ec3b9f99e5"
   ],
   "ddl": [
     {
@@ -1177,6 +1177,16 @@
       "default": null,
       "generated": null,
       "name": "last_error",
+      "entityType": "columns",
+      "table": "session_loop"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "checkpoint_json",
       "entityType": "columns",
       "table": "session_loop"
     },

@@ -192,6 +192,7 @@ export default {
           \`pending_message_id\` text,
           \`reason\` text,
           \`last_error\` text,
+          \`checkpoint_json\` text,
           \`failure_count\` integer DEFAULT 0 NOT NULL,
           \`lease_owner\` text,
           \`lease_expires_at\` integer,

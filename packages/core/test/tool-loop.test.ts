@@ -86,6 +86,7 @@ describe("LoopTool", () => {
       const registry = yield* ToolRegistry.Service
       const loops = yield* SessionLoop.Service
       expect((yield* toolDefinitions(registry)).map((tool) => tool.name).sort()).toEqual([
+        "loop_checkpoint",
         "loop_create",
         "loop_delete",
         "loop_list",
@@ -158,7 +159,18 @@ describe("LoopTool", () => {
         call("loop_wakeup", { id: loop.id, action: "schedule", in: "10s", reason: "wait for CI" }),
       )
       expect(yield* loops.get({ sessionID, id: loop.id })).toMatchObject({ state: "active", reason: "wait for CI" })
-      yield* settleTool(registry, call("loop_wakeup", { id: loop.id, action: "complete", reason: "done" }))
+      yield* settleTool(
+        registry,
+        call("loop_wakeup", {
+          id: loop.id,
+          action: "complete",
+          reason: "done",
+          checkpoint: {
+            acceptanceCriteria: ["CI is green"],
+            verifiedFacts: [{ claim: "CI is green", evidence: ["https://example.com/ci"] }],
+          },
+        }),
+      )
       expect(yield* loops.get({ sessionID, id: loop.id })).toMatchObject({ state: "completed", reason: "done" })
 
       yield* settleTool(registry, call("loop_delete", { id: loop.id }))
@@ -181,6 +193,37 @@ describe("LoopTool", () => {
       })
       expect((yield* loops.get({ sessionID, id: loop.id })).state).toBe("active")
       expect(assertions).toMatchObject([{ sessionID, action: "loop", resources: [loop.id], save: ["*"] }])
+    }),
+  )
+
+  it.effect("merges checkpoint fields through the focused checkpoint tool", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const registry = yield* ToolRegistry.Service
+      const loops = yield* SessionLoop.Service
+      const created = yield* settleTool(
+        registry,
+        call("loop_create", {
+          prompt: "ship",
+          schedule: { kind: "adaptive" },
+          checkpoint: { objective: "Ship", observations: ["old"], nextAction: "inspect" },
+        }),
+      )
+      expect(created).toMatchObject({ result: { type: "text" } })
+      const [loop] = yield* loops.list(sessionID)
+      if (!loop) throw new Error("loop was not created")
+
+      expect(
+        yield* settleTool(
+          registry,
+          call("loop_checkpoint", { id: loop.id, observations: ["new"], nextAction: "verify" }),
+        ),
+      ).toMatchObject({ result: { type: "text", value: expect.stringContaining("checkpoint") } })
+      expect((yield* loops.get({ sessionID, id: loop.id })).checkpoint).toMatchObject({
+        objective: "Ship",
+        observations: ["new"],
+        nextAction: "verify",
+      })
     }),
   )
 })

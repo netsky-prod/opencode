@@ -10,7 +10,33 @@ import { Tool } from "./tool"
 import { ToolRegistry } from "./registry"
 import { Tools } from "./tools"
 
-export const names = ["loop_create", "loop_list", "loop_update", "loop_delete", "loop_wakeup"] as const
+export const names = [
+  "loop_create",
+  "loop_list",
+  "loop_update",
+  "loop_checkpoint",
+  "loop_delete",
+  "loop_wakeup",
+] as const
+
+const CheckpointFields = {
+  objective: Schema.optional(Schema.String),
+  acceptanceCriteria: Schema.optional(Schema.Array(Schema.String)),
+  verifiedFacts: Schema.optional(
+    Schema.Array(Schema.Struct({ claim: Schema.String, evidence: Schema.optional(Schema.Array(Schema.String)) })),
+  ),
+  observations: Schema.optional(Schema.Array(Schema.String)),
+  inferences: Schema.optional(
+    Schema.Array(Schema.Struct({ claim: Schema.String, confidence: Schema.Literals(["low", "medium", "high"]) })),
+  ),
+  assumptions: Schema.optional(Schema.Array(Schema.String)),
+  decisions: Schema.optional(Schema.Array(Schema.Struct({ decision: Schema.String, reason: Schema.String }))),
+  blockers: Schema.optional(Schema.Array(Schema.String)),
+  artifacts: Schema.optional(Schema.Array(Schema.String)),
+  nextAction: Schema.optional(Schema.String),
+} as const
+
+const CheckpointPatch = Schema.Struct(CheckpointFields)
 
 export const CreateInput = Schema.Struct({
   prompt: Schema.Trim.pipe(Schema.check(Schema.isNonEmpty())),
@@ -19,6 +45,7 @@ export const CreateInput = Schema.Struct({
     Schema.Struct({ kind: Schema.Literal("adaptive") }),
   ]),
   reason: Schema.optional(Schema.String),
+  checkpoint: Schema.optional(CheckpointPatch),
 })
 
 export const UpdateInput = Schema.Struct({
@@ -26,6 +53,14 @@ export const UpdateInput = Schema.Struct({
   prompt: Schema.optional(Schema.String),
   every: Schema.optional(Schema.String),
   state: Schema.optional(Schema.Literals(["active", "paused", "completed"])),
+  reason: Schema.optional(Schema.String),
+  checkpoint: Schema.optional(CheckpointPatch),
+})
+
+export const CheckpointInput = Schema.Struct({
+  id: SessionLoop.ID,
+  ...CheckpointFields,
+  state: Schema.optional(Schema.Literal("completed")),
   reason: Schema.optional(Schema.String),
 })
 
@@ -40,6 +75,7 @@ export const WakeupInput = Schema.Union([
     id: SessionLoop.ID,
     action: Schema.Literals(["pause", "complete"]),
     reason: Schema.Trim.pipe(Schema.check(Schema.isNonEmpty())),
+    checkpoint: Schema.optional(CheckpointPatch),
   }),
 ])
 
@@ -56,6 +92,10 @@ function summary(loop: SessionLoop.Info) {
     `next: ${next}`,
     `prompt: ${loop.prompt}`,
     loop.reason ? `reason: ${loop.reason}` : undefined,
+    loop.checkpoint
+      ? `checkpoint: objective=${loop.checkpoint.objective.slice(0, 200) || "none"}; next action=${loop.checkpoint.nextAction.slice(0, 200) || "none"}; facts=${loop.checkpoint.verifiedFacts.length}; blockers=${loop.checkpoint.blockers.length}`
+      : undefined,
+    loop.checkpointDiagnostic ? `checkpoint diagnostic: ${loop.checkpointDiagnostic.message}` : undefined,
   ]
     .filter((line) => line !== undefined)
     .join("\n")
@@ -99,6 +139,7 @@ const layer = Layer.effectDiscard(
                 mode: input.schedule.kind,
                 intervalMs,
                 reason: input.reason,
+                checkpoint: input.checkpoint,
               })
               return { message: summary(loop) }
             }).pipe(Effect.mapError(() => new ToolFailure({ message: "Unable to create loop" }))),
@@ -137,9 +178,47 @@ const layer = Layer.effectDiscard(
                 intervalMs,
                 state: input.state,
                 reason: input.reason,
+                checkpoint: input.checkpoint,
               })
               return { message: summary(loop) }
             }).pipe(Effect.mapError(() => new ToolFailure({ message: "Unable to update loop" }))),
+        }),
+        loop_checkpoint: Tool.make({
+          description:
+            "Partially update a durable loop checkpoint, or complete an adaptive loop with verified evidence.",
+          input: CheckpointInput,
+          output: Output,
+          toModelOutput,
+          execute: (input, context) =>
+            Effect.gen(function* () {
+              yield* permission.assert({
+                action: "loop",
+                resources: [input.id],
+                save: ["*"],
+                sessionID: context.sessionID,
+                agent: context.agent,
+                source: { type: "tool", messageID: context.assistantMessageID, callID: context.toolCallID },
+              })
+              const loop = yield* loops.checkpoint({
+                sessionID: context.sessionID,
+                id: input.id,
+                checkpoint: {
+                  objective: input.objective,
+                  acceptanceCriteria: input.acceptanceCriteria,
+                  verifiedFacts: input.verifiedFacts,
+                  observations: input.observations,
+                  inferences: input.inferences,
+                  assumptions: input.assumptions,
+                  decisions: input.decisions,
+                  blockers: input.blockers,
+                  artifacts: input.artifacts,
+                  nextAction: input.nextAction,
+                },
+                state: input.state,
+                reason: input.reason,
+              })
+              return { message: summary(loop) }
+            }).pipe(Effect.mapError(() => new ToolFailure({ message: "Unable to update loop checkpoint" }))),
         }),
         loop_delete: Tool.make({
           description: "Delete a durable loop owned by the current session.",
@@ -195,6 +274,7 @@ const layer = Layer.effectDiscard(
                       id: input.id,
                       state: input.action === "pause" ? "paused" : "completed",
                       reason: input.reason,
+                      checkpoint: input.checkpoint,
                       now,
                     })
               return { message: summary(loop) }
