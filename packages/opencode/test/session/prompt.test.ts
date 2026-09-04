@@ -6,7 +6,7 @@ import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { eq } from "drizzle-orm"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { expect } from "bun:test"
-import { Cause, Deferred, Duration, Effect, Exit, Fiber, Layer } from "effect"
+import { Cause, Deferred, Duration, Effect, Exit, Fiber, Layer, Scope } from "effect"
 import path from "path"
 import { fileURLToPath } from "url"
 import fs from "node:fs/promises"
@@ -59,6 +59,8 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { LocationServiceMap, locationServiceMapLayer, locationServiceMapNode } from "../../src/location-services"
+import { Location as CoreLocation } from "@opencode-ai/core/location"
+import { AbsolutePath } from "@opencode-ai/core/schema"
 
 const summary = Layer.succeed(
   SessionSummary.Service,
@@ -332,10 +334,11 @@ const useServerConfig = Effect.fn("test.useServerConfig")(function* (config: (ur
   return { dir, llm }
 })
 
-function capabilityFixturePath(directory: string) {
+function capabilityFixturePath(directory: string, closeMarker?: string) {
   return Effect.acquireRelease(
     Effect.promise(async () => {
       const previous = process.env.PATH
+      const previousMarker = process.env.OPENCODE_TEST_BROWSER_CLOSE_MARKER
       const bin = path.join(directory, "capability-bin")
       const npx = path.join(bin, "npx")
       const node = path.join(bin, "node")
@@ -353,12 +356,15 @@ function capabilityFixturePath(directory: string) {
       await fs.chmod(npx, 0o755)
       await fs.chmod(node, 0o755)
       process.env.PATH = `${bin}${path.delimiter}${previous ?? ""}`
-      return previous
+      if (closeMarker) process.env.OPENCODE_TEST_BROWSER_CLOSE_MARKER = closeMarker
+      return { previous, previousMarker }
     }),
-    (previous) =>
+    ({ previous, previousMarker }) =>
       Effect.sync(() => {
         if (previous === undefined) delete process.env.PATH
         else process.env.PATH = previous
+        if (previousMarker === undefined) delete process.env.OPENCODE_TEST_BROWSER_CLOSE_MARKER
+        else process.env.OPENCODE_TEST_BROWSER_CLOSE_MARKER = previousMarker
       }),
   )
 }
@@ -1095,16 +1101,72 @@ noLLMServer.instance(
   () =>
     Effect.gen(function* () {
       const test = yield* TestInstance
-      yield* capabilityFixturePath(test.directory)
+      const closeMarker = path.join(test.directory, "capability-bridge-closed")
+      yield* capabilityFixturePath(test.directory, closeMarker)
       const sessions = yield* Session.Service
       const agents = yield* AgentSvc.Service
       const providers = yield* ProviderSvc.Service
+      const permissions = yield* Permission.Service
+      const system = yield* SystemPrompt.Service
+      const locations = yield* LocationServiceMap.Service
+      const legacyRegistry = yield* ToolRegistry.Service
+      const originalLegacyTools = legacyRegistry.tools
+      const mutableLegacyRegistry = legacyRegistry as { tools: ToolRegistry.Interface["tools"] }
+      mutableLegacyRegistry.tools = (args) =>
+        originalLegacyTools(args).pipe(
+          Effect.map((items) => {
+            const base = items[0]
+            if (!base) return items
+            return [
+              ...items,
+              { ...base, id: "capability_search", description: "collision management tool" },
+              {
+                ...base,
+                id: "browser_playwright_browser_navigate",
+                description: "collision runtime tool",
+              },
+            ]
+          }),
+        )
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          mutableLegacyRegistry.tools = originalLegacyTools
+        }),
+      )
       const agent = yield* agents.get("build")
       const model = yield* providers.getModel(ref.providerID, ref.modelID)
-      const first = yield* sessions.create({ title: "Capability bridge" })
+      const first = yield* sessions.create({
+        title: "Capability bridge",
+        permission: [
+          { permission: "capability_enable", pattern: "browser", action: "ask" },
+          { permission: "capability_disable", pattern: "browser", action: "ask" },
+        ],
+      })
       const second = yield* sessions.create({ title: "Capability isolation" })
+      const canonical = "mcp:playwright:browser_playwright_browser_navigate"
+      const approval = yield* sessions.create({
+        title: "Capability approval",
+        permission: [
+          { permission: "browser_playwright_browser_navigate", pattern: canonical, action: "ask" },
+          { permission: "skill", pattern: "browser-testing", action: "ask" },
+        ],
+      })
+      const deniedSession = yield* sessions.create({
+        title: "Capability denial",
+        permission: [
+          { permission: "capability_enable", pattern: "research", action: "deny" },
+          {
+            permission: "browser_playwright_browser_navigate",
+            pattern: "data:text/html,denied",
+            action: "deny",
+          },
+        ],
+      })
       const firstTurn = yield* seed(first.id)
       const secondTurn = yield* seed(second.id)
+      const approvalTurn = yield* seed(approval.id)
+      const deniedTurn = yield* seed(deniedSession.id)
+      const turnScope = yield* Scope.make()
       const promptOps = {
         cancel: () => Effect.void,
         resolvePromptParts: (template: string) => Effect.succeed([{ type: "text" as const, text: template }]),
@@ -1123,7 +1185,7 @@ noLLMServer.instance(
           bypassAgentCheck: false,
           messages: [],
           promptOps,
-        })
+        }).pipe(Effect.provideService(Scope.Scope, turnScope))
 
       const before = yield* resolveTools(first, firstTurn.assistant)
       expect(Object.keys(before).filter((name) => name.startsWith("capability_"))).toEqual([
@@ -1132,14 +1194,36 @@ noLLMServer.instance(
         "capability_disable",
         "capability_status",
       ])
-      const enabled = yield* Effect.promise(() =>
+      expect(before.capability_search.description).toContain("Search installed capability packs")
+      const enableFiber = yield* Effect.forkIn(
+        Effect.promise(() =>
+          before.capability_enable.execute!(
+            { id: "browser", profiles: ["default"] },
+            capabilityToolOptions("call-enable-browser"),
+          ),
+        ),
+        turnScope,
+      )
+      const enableRequest = yield* pollWithTimeout(
+        permissions.list().pipe(Effect.map((items) => items.find((item) => item.sessionID === first.id))),
+        "capability enable permission request was not bridged",
+      )
+      expect(enableRequest).toMatchObject({
+        permission: "capability_enable",
+        patterns: ["browser"],
+        always: ["browser"],
+      })
+      yield* permissions.reply({ requestID: enableRequest.id, reply: "always" })
+      const enabled = yield* awaitWithTimeout(Fiber.join(enableFiber), "approved capability enable did not settle")
+      expect(enabled).toMatchObject({ metadata: { structured: { id: "browser", state: "active", nextTurn: true } } })
+      yield* Effect.promise(() =>
         before.capability_enable.execute!(
           { id: "browser", profiles: ["default"] },
-          capabilityToolOptions("call-enable-browser"),
+          capabilityToolOptions("call-enable-browser-always"),
         ),
       )
-      expect(enabled).toMatchObject({ metadata: { structured: { id: "browser", state: "active", nextTurn: true } } })
-      expect(Object.keys(before).filter((name) => name.startsWith("browser_"))).toEqual([])
+      expect((yield* permissions.list()).filter((item) => item.sessionID === first.id)).toEqual([])
+      expect(before.browser_playwright_browser_navigate.description).toBe("collision runtime tool")
 
       const next = yield* resolveTools(first, firstTurn.assistant)
       expect(
@@ -1152,6 +1236,17 @@ noLLMServer.instance(
         "browser_playwright_browser_take_screenshot",
       ])
       expect(Object.keys(next).some((name) => name.startsWith("browser_chrome-devtools_"))).toBe(false)
+      expect(next.browser_playwright_browser_navigate.description).toBe("Navigate to a URL")
+      const guidance = yield* system.skills(agent, first)
+      expect(guidance).toContain("<name>browser-testing</name>")
+      expect(yield* system.skills(agent, second)).not.toContain("<name>browser-testing</name>")
+
+      const refKey = CoreLocation.Ref.make({
+        directory: AbsolutePath.make(first.directory),
+        workspaceID: first.workspaceID,
+      })
+      yield* locations.invalidate(refKey)
+      expect(yield* Effect.promise(() => Bun.file(closeMarker).exists())).toBe(false)
       const page = "data:text/html,%3Ch1%3ECapability%20bridge%3C%2Fh1%3E"
       yield* Effect.promise(() =>
         next.browser_playwright_browser_navigate.execute!(
@@ -1182,13 +1277,136 @@ noLLMServer.instance(
       )
       expect(skill).toMatchObject({ output: expect.stringContaining("Save a screenshot for the final verified state") })
 
+      const approvalBefore = yield* resolveTools(approval, approvalTurn.assistant)
+      yield* Effect.promise(() =>
+        approvalBefore.capability_enable.execute!(
+          { id: "browser", profiles: ["default"] },
+          capabilityToolOptions("call-enable-approval-browser"),
+        ),
+      )
+      const approvalTools = yield* resolveTools(approval, approvalTurn.assistant)
+      const approvalUrl = "data:text/html,%3Ch1%3EApproved%3C%2Fh1%3E"
+      const approvalFiber = yield* Effect.forkIn(
+        Effect.promise(() =>
+          approvalTools.browser_playwright_browser_navigate.execute!(
+            { url: approvalUrl },
+            capabilityToolOptions("call-browser-approval"),
+          ),
+        ),
+        turnScope,
+      )
+      const request = yield* pollWithTimeout(
+        permissions.list().pipe(Effect.map((items) => items.find((item) => item.sessionID === approval.id))),
+        "capability permission request was not bridged",
+      )
+      expect(request).toMatchObject({
+        permission: "browser_playwright_browser_navigate",
+        patterns: [canonical, approvalUrl],
+        always: [canonical],
+      })
+      yield* permissions.reply({ requestID: request.id, reply: "always" })
+      yield* awaitWithTimeout(Fiber.join(approvalFiber), "approved capability call did not settle")
+      const secondApprovalUrl = "data:text/html,%3Ch1%3EApproved%20again%3C%2Fh1%3E"
+      yield* Effect.promise(() =>
+        approvalTools.browser_playwright_browser_navigate.execute!(
+          { url: secondApprovalUrl },
+          capabilityToolOptions("call-browser-approved-always"),
+        ),
+      )
+      expect((yield* permissions.list()).filter((item) => item.sessionID === approval.id)).toEqual([])
+
+      const skillFiber = yield* Effect.forkIn(
+        Effect.promise(() =>
+          approvalTools.skill.execute!({ name: "browser-testing" }, capabilityToolOptions("call-browser-skill-ask")),
+        ),
+        turnScope,
+      )
+      const skillRequest = yield* pollWithTimeout(
+        permissions.list().pipe(Effect.map((items) => items.find((item) => item.sessionID === approval.id))),
+        "capability skill permission request was not bridged",
+      )
+      expect(skillRequest).toMatchObject({
+        permission: "skill",
+        patterns: ["browser-testing"],
+        always: ["browser-testing"],
+      })
+      yield* permissions.reply({ requestID: skillRequest.id, reply: "once" })
+      yield* awaitWithTimeout(Fiber.join(skillFiber), "approved capability skill did not settle")
+
+      const deniedBefore = yield* resolveTools(deniedSession, deniedTurn.assistant)
+      const deniedEnable = yield* Effect.promise(async () => {
+        try {
+          await deniedBefore.capability_enable.execute!(
+            { id: "research", profiles: ["default"] },
+            capabilityToolOptions("call-enable-denied-research"),
+          )
+          return undefined
+        } catch (error) {
+          return error
+        }
+      })
+      expect(String(deniedEnable)).toContain("Permission denied")
+      yield* Effect.promise(() =>
+        deniedBefore.capability_enable.execute!(
+          { id: "browser", profiles: ["default"] },
+          capabilityToolOptions("call-enable-denied-browser"),
+        ),
+      )
+      const deniedTools = yield* resolveTools(deniedSession, deniedTurn.assistant)
+      const denied = yield* Effect.promise(async () => {
+        try {
+          await deniedTools.browser_playwright_browser_navigate.execute!(
+            { url: "data:text/html,denied" },
+            capabilityToolOptions("call-browser-denied"),
+          )
+          return undefined
+        } catch (error) {
+          return error
+        }
+      })
+      expect(String(denied)).toContain("Permission denied")
+
+      const controller = new AbortController()
+      const hanging = approvalTools.browser_playwright_browser_navigate.execute!(
+        { url: "fixture:hang" },
+        { ...capabilityToolOptions("call-browser-abort"), abortSignal: controller.signal },
+      )
+      yield* Effect.sleep("100 millis")
+      controller.abort()
+      const interrupted = yield* awaitWithTimeout(
+        Effect.promise(async () => {
+          try {
+            await hanging
+            return undefined
+          } catch (error) {
+            return error
+          }
+        }),
+        "aborted capability MCP call did not settle",
+      )
+      expect(String(interrupted)).toContain("Capability tool invocation failed")
+
       const isolated = yield* resolveTools(second, secondTurn.assistant)
       expect(Object.keys(isolated).filter((name) => name.startsWith("capability_"))).toHaveLength(4)
-      expect(Object.keys(isolated)).not.toContain("browser_playwright_browser_navigate")
+      expect(isolated.browser_playwright_browser_navigate.description).toBe("collision runtime tool")
 
-      yield* Effect.promise(() =>
-        next.capability_disable.execute!({ id: "browser" }, capabilityToolOptions("call-disable-browser")),
+      const disableFiber = yield* Effect.forkIn(
+        Effect.promise(() =>
+          next.capability_disable.execute!({ id: "browser" }, capabilityToolOptions("call-disable-browser")),
+        ),
+        turnScope,
       )
+      const disableRequest = yield* pollWithTimeout(
+        permissions.list().pipe(Effect.map((items) => items.find((item) => item.sessionID === first.id))),
+        "capability disable permission request was not bridged",
+      )
+      expect(disableRequest).toMatchObject({
+        permission: "capability_disable",
+        patterns: ["browser"],
+        always: ["browser"],
+      })
+      yield* permissions.reply({ requestID: disableRequest.id, reply: "once" })
+      yield* awaitWithTimeout(Fiber.join(disableFiber), "approved capability disable did not settle")
       const stale = yield* Effect.tryPromise({
         try: () =>
           next.browser_playwright_browser_snapshot.execute!({}, capabilityToolOptions("call-stale-browser-snapshot")),
@@ -1196,9 +1414,17 @@ noLLMServer.instance(
       }).pipe(Effect.exit)
       expect(Exit.isFailure(stale) ? Cause.pretty(stale.cause) : "").toContain("Stale tool call")
       const disabled = yield* resolveTools(first, firstTurn.assistant)
-      expect(Object.keys(disabled)).not.toContain("browser_playwright_browser_navigate")
+      expect(disabled.browser_playwright_browser_navigate.description).toBe("collision runtime tool")
+      expect(yield* system.skills(agent, first)).not.toContain("<name>browser-testing</name>")
+      yield* Scope.close(turnScope, Exit.void)
+      yield* locations.invalidate(refKey)
+      yield* pollWithTimeout(
+        Effect.promise(() => Bun.file(closeMarker).exists()).pipe(Effect.map((exists) => (exists ? true : undefined))),
+        "capability browser process was not closed after the turn lease released",
+      )
     }),
   { config: cfg },
+  10_000,
 )
 
 it.instance(

@@ -217,7 +217,7 @@ export interface Definition {
   readonly upstreamName: string
   readonly description: string
   readonly inputSchema: JSONSchema7
-  readonly call: (input: unknown) => Effect.Effect<CallToolResult, MCPError>
+  readonly call: (input: unknown, signal?: AbortSignal) => Effect.Effect<CallToolResult, MCPError>
 }
 
 export interface Interface {
@@ -890,11 +890,12 @@ const layer = Layer.effect(
             upstreamName: def.name,
             description: def.description ?? "",
             inputSchema,
-            call: (input: unknown) =>
+            call: (input: unknown, signal?: AbortSignal) =>
               Effect.tryPromise({
                 try: () =>
                   client.callTool({ name: def.name, arguments: record(input) }, CallToolResultSchema, {
                     resetTimeoutOnProgress: true,
+                    signal,
                     timeout,
                     onprogress: () => {},
                   }),

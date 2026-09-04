@@ -5,12 +5,19 @@ import { Effect, JsonSchema, Schema } from "effect"
 import type { AgentV2 } from "../agent"
 import type { SessionMessage } from "../session/message"
 import type { SessionSchema } from "../session/schema"
+import type { PermissionV2 } from "../permission"
+
+export interface Permission {
+  readonly assert: (input: PermissionV2.AssertInput) => Effect.Effect<void, unknown>
+}
 
 export interface Context {
   readonly sessionID: SessionSchema.ID
   readonly agent: AgentV2.ID
   readonly assistantMessageID: SessionMessage.ID
   readonly toolCallID: string
+  readonly abortSignal?: AbortSignal
+  readonly permission?: Permission
 }
 
 export type SchemaType<A> = Schema.Codec<A, any, never, never>

@@ -105,3 +105,35 @@ git diff --check: exit 0
 ```
 
 The live Qwen gate was not rerun in this worker, as requested; the root agent owns that rerun after review.
+
+## Live-Gate Bridge Review Fix
+
+The first bridge review found four provider-turn integration defects, each reproduced before its fix at the real legacy `SessionTools.resolve` boundary:
+
+- the location-service lease ended when schemas were resolved, allowing invalidation to finalize the Core registry and runtime while the provider still held executable callbacks;
+- capability runtime calls first asked through the legacy permission service with wildcard resources and then authorized again through Core, so session overrides could be bypassed or an unhandled second request could hang;
+- the legacy abort signal stopped at the wrapper and never reached the hidden MCP client;
+- active embedded capability skills were executable by name but absent from the legacy system prompt.
+
+Each provider step now owns a scope. `SessionTools` builds the session's existing location layer in that scope, so immutable materialization callbacks retain a lease until the complete provider turn settles. A deterministic invalidation regression proves an active turn remains usable, then closes the fixture process after the turn scope is released and the invalidated location is finalized.
+
+Core tool execution context now carries the host permission service and abort signal. Capability runtime and skill leaves still derive their own canonical permission action/resources, but delegate the single decision to the supplied legacy permission service. The bridge translates the exact resource set and canonical-only save set without wildcard persistence. Regression coverage proves one pending request, `always` reuse, resource-specific denial, and no second Core request. The abort signal is forwarded through Core settlement, capability runtime definitions, and the MCP SDK call; aborting a deliberately hanging fixture call settles within the focused test timeout.
+
+`SystemPrompt.skills` now uses the session's real location and `SkillGuidance.listForSession`, merges capability skills with legacy skills, and applies the merged agent/session permission rules. Its rendered prompt includes the active shipped `browser-testing` skill for only the enabling session and removes it after disable.
+
+Core management and active runtime definitions now deterministically supersede colliding legacy/custom schemas for the enabling session, and the later legacy MCP merge cannot overwrite any bridged definition. A mutation-strength regression injects collisions for both `capability_search` and a canonical browser runtime name: Core wins while active, while isolated and disabled sessions keep their unrelated legacy tool.
+
+The follow-up review also caught that management leaves did not yet invoke the host permission service. All four management tools now authorize exactly once before work begins; enable/disable/status use the requested pack ID as their resource and search uses the query. The integration regression proves a pending enable request contains only `browser`, an `always` reply permits the same enable without another request, resource-specific denial blocks `research`, and disable asks independently before releasing the runtime.
+
+Review-fix verification:
+
+```text
+packages/core capability/plugin/location/runtime: 55 passed, 0 failed
+packages/opencode capability/prompt/system: 76 passed, 1 pre-existing skip, 0 failed
+packages/core: tsgo --noEmit exit 0
+packages/opencode: tsgo --noEmit exit 0
+targeted oxlint: 0 errors (pre-existing warnings only)
+git diff --check: exit 0
+```
+
+The live Qwen gate remains intentionally delegated to the root agent.

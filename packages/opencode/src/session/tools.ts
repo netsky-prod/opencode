@@ -14,7 +14,7 @@ import { Truncate } from "@/tool/truncate"
 import { Plugin } from "@/plugin"
 import type { TaskPromptOps } from "@/tool/task"
 import { type Tool as AITool, tool, jsonSchema, type ToolExecutionOptions, asSchema } from "ai"
-import { Effect } from "effect"
+import { Effect, Layer, Scope } from "effect"
 import { Session } from "./session"
 import { SessionProcessor } from "./processor"
 import { PartID } from "./schema"
@@ -69,6 +69,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: Resol
   const truncate = yield* Truncate.Service
   const flags = yield* RuntimeFlags.Service
   const locations = yield* LocationServiceMap.Service
+  const turnScope = yield* Scope.Scope
 
   const context = (args: Record<string, unknown>, options: ToolExecutionOptions): Tool.Context => ({
     sessionID: input.session.id,
@@ -147,25 +148,21 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: Resol
     })
   }
 
-  const bridgedEffect = coreTools({
+  const location = Location.Ref.make({
+    directory: AbsolutePath.make(input.session.directory),
+    workspaceID: input.session.workspaceID,
+  })
+  const locationContext = yield* Layer.buildWithScope(locations.get(location), turnScope)
+  const bridged = yield* coreTools({
     session: input.session,
     permissions: Permission.merge(input.agent.permission, input.session.permission ?? []),
-  }).pipe(
-    Effect.provide(
-      locations.get(
-        Location.Ref.make({
-          directory: AbsolutePath.make(input.session.directory),
-          workspaceID: input.session.workspaceID,
-        }),
-      ),
-    ),
-    Effect.scoped,
-  )
-  const bridged = yield* bridgedEffect
+  }).pipe(Effect.provide(locationContext))
   const legacySkill = tools.skill
+  const bridgedNames = new Set<string>()
   for (const item of bridged.definitions) {
+    bridgedNames.add(item.name)
     if (item.name === "skill") {
-      const capabilitySkill = coreTool(item, bridged.materialization, input, context, plugin, run)
+      const capabilitySkill = coreTool(item, bridged.materialization, input, context, plugin, permission, run)
       tools.skill = tool({
         description: legacySkill?.description ?? item.description,
         inputSchema: legacySkill?.inputSchema ?? capabilitySkill.inputSchema,
@@ -178,8 +175,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: Resol
       })
       continue
     }
-    if (tools[item.name]) continue
-    tools[item.name] = coreTool(item, bridged.materialization, input, context, plugin, run)
+    tools[item.name] = coreTool(item, bridged.materialization, input, context, plugin, permission, run)
   }
 
   const hasMcpResourceServer = Object.values(yield* mcp.clients()).some(
@@ -437,6 +433,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: Resol
   if (flags.experimentalCodeMode) return tools
 
   for (const [key, entry] of Object.entries(yield* mcp.tools())) {
+    if (bridgedNames.has(key)) continue
     const item = McpCatalog.convertTool(entry.def, entry.client, entry.timeout)
     const execute = item.execute
     if (!execute) continue
@@ -585,6 +582,7 @@ function coreTool(
   input: ResolveInput,
   context: (args: Record<string, unknown>, options: ToolExecutionOptions) => Tool.Context,
   plugin: Plugin.Interface,
+  permission: Permission.Interface,
   run: EffectBridge.Shape,
 ): AITool {
   const schema = ProviderTransform.schema(input.model, item.inputSchema)
@@ -601,18 +599,24 @@ function coreTool(
             { tool: item.name, sessionID: ctx.sessionID, callID: ctx.callID },
             { args },
           )
-          const resource = item.name === "skill" && typeof values.name === "string" ? values.name : "*"
-          yield* ctx.ask({
-            permission: item.name,
-            metadata: {},
-            patterns: [resource],
-            always: [resource],
-          })
           const settlement = yield* materialization.settle({
             sessionID: SessionV2.ID.make(input.session.id),
             agent: AgentV2.ID.make(input.agent.name),
             assistantMessageID: SessionMessage.ID.make(input.processor.message.id),
             call: { type: "tool-call", id: options.toolCallId, name: item.name, input: args },
+            abortSignal: options.abortSignal,
+            permission: {
+              assert: (request) =>
+                permission.ask({
+                  permission: request.action,
+                  metadata: request.metadata ?? {},
+                  patterns: [...request.resources],
+                  always: [...(request.save ?? [])],
+                  sessionID: input.session.id,
+                  tool: { messageID: input.processor.message.id, callID: options.toolCallId },
+                  ruleset: Permission.merge(input.agent.permission, input.session.permission ?? []),
+                }),
+            },
           })
           if (settlement.result.type === "error") throw new Error(resultText(settlement.result.value))
           const output = legacyOutput(item, settlement, input)

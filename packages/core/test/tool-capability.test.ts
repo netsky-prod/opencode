@@ -350,7 +350,17 @@ describe("CapabilityTool", () => {
           permissionFiltered: true,
         },
       })
-      expect(events.slice(0, 3)).toEqual(["probe", "runtime:activate", "persist:enable"])
+      expect(events.slice(0, 4)).toEqual([
+        "permission:capability_enable",
+        "probe",
+        "runtime:activate",
+        "persist:enable",
+      ])
+      expect(permissionRequests[0]).toMatchObject({
+        action: "capability_enable",
+        resources: ["browser"],
+        save: ["browser"],
+      })
 
       const materialized = yield* yieldRegistry.materialize(sessionID)
       expect(names(materialized)).toContain("browser_playwright_navigate")
@@ -478,7 +488,7 @@ describe("CapabilityTool", () => {
           remediation: expect.arrayContaining([expect.stringContaining("node")]),
         },
       })
-      expect(events).toEqual(["probe"])
+      expect(events).toEqual(["permission:capability_enable", "probe"])
       expect(activations.get(sessionID)).toBeUndefined()
     }),
   )
@@ -622,7 +632,12 @@ describe("CapabilityTool", () => {
         type: "json",
         value: { id: "browser", state: "disabled", nextTurn: true },
       })
-      expect(events).toEqual(["persist:disable", "runtime:release"])
+      expect(events).toEqual(["permission:capability_disable", "persist:disable", "runtime:release"])
+      expect(permissionRequests.at(-1)).toMatchObject({
+        action: "capability_disable",
+        resources: ["browser"],
+        save: ["browser"],
+      })
       expect(names(yield* yieldRegistry.materialize(sessionID))).not.toContain("browser_playwright_navigate")
     }),
   )

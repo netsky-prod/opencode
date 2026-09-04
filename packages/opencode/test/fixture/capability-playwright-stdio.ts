@@ -60,6 +60,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   let structuredContent: Readonly<Record<string, unknown>>
   if (request.params.name === "browser_navigate") {
     const url = String(input.url)
+    if (url === "fixture:hang") await new Promise<never>(() => {})
     current = { url, body: await fetch(url).then((response) => response.text()) }
     structuredContent = { url, status: 200 }
   } else if (request.params.name === "browser_snapshot") {

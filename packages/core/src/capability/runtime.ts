@@ -23,7 +23,7 @@ export interface Tool {
   readonly name: string
   readonly description: string
   readonly inputSchema: Readonly<object>
-  readonly call: (input: unknown) => Effect.Effect<unknown, unknown>
+  readonly call: (input: unknown, signal?: AbortSignal) => Effect.Effect<unknown, unknown>
 }
 
 export interface Value {

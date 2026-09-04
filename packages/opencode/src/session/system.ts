@@ -23,6 +23,13 @@ import { LocationServiceMap, locationServiceMapNode } from "@/location-services"
 import { Reference } from "@opencode-ai/core/reference"
 import { MCP } from "@/mcp"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
+import type { Session } from "./session"
+import { SkillGuidance } from "@opencode-ai/core/skill/guidance"
+import { SkillV2 } from "@opencode-ai/core/skill"
+import { CapabilityState } from "@opencode-ai/core/capability/state"
+import { CapabilityCatalog } from "@opencode-ai/core/capability/catalog"
+import { PluginV2 } from "@opencode-ai/core/plugin"
+import { SessionV2 } from "@opencode-ai/core/session"
 
 export function provider(model: Provider.Model) {
   if (model.api.id.includes("muse")) {
@@ -50,7 +57,7 @@ export function provider(model: Provider.Model) {
 
 export interface Interface {
   readonly environment: (model: Provider.Model) => Effect.Effect<string[]>
-  readonly skills: (agent: Agent.Info) => Effect.Effect<string | undefined>
+  readonly skills: (agent: Agent.Info, session?: Session.Info) => Effect.Effect<string | undefined>
   readonly mcp: (agent: Agent.Info, permission?: PermissionV1.Ruleset) => Effect.Effect<string | undefined>
 }
 
@@ -102,10 +109,40 @@ const layer = Layer.effect(
         ].filter((part): part is string => part !== undefined)
       }),
 
-      skills: Effect.fn("SystemPrompt.skills")(function* (agent: Agent.Info) {
-        if (Permission.disabled(["skill"], agent.permission).has("skill")) return
+      skills: Effect.fn("SystemPrompt.skills")(function* (agent: Agent.Info, session?: Session.Info) {
+        const rules = Permission.merge(agent.permission, session?.permission ?? [])
+        if (Permission.disabled(["skill"], rules).has("skill")) return
 
-        const list = yield* skill.available(agent)
+        const legacy = yield* skill.available(agent)
+        const capability = session
+          ? yield* Effect.gen(function* () {
+              const plugin = yield* PluginV2.Service
+              yield* plugin.wait(PluginV2.ID.make("capability"))
+              return yield* SkillGuidance.listForSession({
+                sessionID: SessionV2.ID.make(session.id),
+                skills: yield* SkillV2.Service,
+                capabilities: yield* CapabilityState.Service,
+                catalog: yield* CapabilityCatalog.Service,
+              })
+            }).pipe(
+              Effect.provide(
+                locations.get(
+                  Location.Ref.make({
+                    directory: AbsolutePath.make(session.directory),
+                    workspaceID: session.workspaceID,
+                  }),
+                ),
+              ),
+              Effect.scoped,
+            )
+          : []
+        const list = Array.from(
+          new Map(
+            [...legacy, ...capability]
+              .filter((item) => Permission.evaluate("skill", item.name, rules).action !== "deny")
+              .map((item) => [item.name, item]),
+          ).values(),
+        )
 
         return [
           "Skills provide specialized instructions and workflows for specific tasks.",

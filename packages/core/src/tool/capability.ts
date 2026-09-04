@@ -114,6 +114,22 @@ const layer = Layer.effectDiscard(
     const shared = new Map<string, SharedRegistration>()
     const failures = new Map<string, { readonly checkedAt: number; readonly remediation: ReadonlyArray<string> }>()
 
+    const authorize = (context: Tool.Context, action: string, resource: string) =>
+      (context.permission ?? permission)
+        .assert({
+          action,
+          resources: [resource],
+          save: [resource],
+          sessionID: context.sessionID,
+          agent: context.agent,
+          source: {
+            type: "tool",
+            messageID: context.assistantMessageID,
+            callID: context.toolCallID,
+          },
+        })
+        .pipe(Effect.mapError(() => new ToolFailure({ message: `Permission denied: ${action}` })))
+
     const probe = (pack: CapabilityCatalog.Pack) =>
       Effect.forEach(
         pack.dependencies ?? [],
@@ -238,34 +254,33 @@ const layer = Layer.effectDiscard(
                           if (Result.isFailure(checked)) {
                             return Effect.fail(new ToolFailure({ message: checked.failure.message }))
                           }
-                          return permission
-                            .assert({
-                              action: definition.name,
-                              resources: checked.success,
-                              save: [canonical],
-                              sessionID: context.sessionID,
-                              agent: context.agent,
-                              source: {
-                                type: "tool",
-                                messageID: context.assistantMessageID,
-                                callID: context.toolCallID,
-                              },
-                            })
-                            .pipe(
-                              Effect.mapError(
-                                () => new ToolFailure({ message: `Permission denied: ${definition.name}` }),
-                              ),
-                              Effect.andThen(
-                                current.call(input).pipe(
-                                  Effect.mapError(
-                                    () =>
-                                      new ToolFailure({
-                                        message: `Capability tool invocation failed: ${definition.name}`,
-                                      }),
-                                  ),
+                          const authorization = {
+                            action: definition.name,
+                            resources: checked.success,
+                            save: [canonical],
+                            sessionID: context.sessionID,
+                            agent: context.agent,
+                            source: {
+                              type: "tool" as const,
+                              messageID: context.assistantMessageID,
+                              callID: context.toolCallID,
+                            },
+                          }
+                          return (context.permission ?? permission).assert(authorization).pipe(
+                            Effect.mapError(
+                              () => new ToolFailure({ message: `Permission denied: ${definition.name}` }),
+                            ),
+                            Effect.andThen(
+                              current.call(input, context.abortSignal).pipe(
+                                Effect.mapError(
+                                  () =>
+                                    new ToolFailure({
+                                      message: `Capability tool invocation failed: ${definition.name}`,
+                                    }),
                                 ),
                               ),
-                            )
+                            ),
+                          )
                         },
                         toStructuredOutput: structuredOutput,
                         toModelOutput: modelOutput,
@@ -483,6 +498,7 @@ const layer = Layer.effectDiscard(
           }),
           execute: (input, context) =>
             Effect.gen(function* () {
+              yield* authorize(context, "capability_search", input.query)
               const active = new Set((yield* state.list(context.sessionID)).map((item) => item.id))
               const matches = (yield* catalog.search(input.query, active)).slice(0, MAX_SEARCH_RESULTS)
               return {
@@ -515,29 +531,36 @@ const layer = Layer.effectDiscard(
           }),
           output: EnableOutput,
           execute: (input, context) =>
-            locks.withLock(activationKey(context.sessionID, input.id))(
-              Effect.gen(function* () {
-                const pack = yield* catalog.get(input.id)
-                if (!pack) return yield* new ToolFailure({ message: `Capability manifest not found: ${input.id}` })
-                const key = activationKey(context.sessionID, input.id)
-                const durable = (yield* state.list(context.sessionID)).find((activation) => activation.id === input.id)
-                const current = held.get(key)
-                if (
-                  current &&
-                  (!durable ||
-                    current.fingerprint !== manifestFingerprint(pack) ||
-                    !sameProfiles(current.profiles, durable.profiles))
-                ) {
-                  yield* dropHeld(key, current)
-                }
-                const profiles = validProfiles(pack, input.profiles ?? [CapabilityManifest.ID.make("default")])
-                if (!profiles) {
-                  const missing = input.profiles?.find((profile) => !Object.hasOwn(pack.profiles, profile)) ?? "default"
-                  return yield* new ToolFailure({ message: `Capability profile not found: ${input.id}/${missing}` })
-                }
-                const dependencies = compatible(pack) ? yield* probe(pack) : []
-                return yield* activateLocked(context.sessionID, pack, profiles, dependencies, true, context.agent)
-              }),
+            authorize(context, "capability_enable", input.id).pipe(
+              Effect.andThen(
+                locks.withLock(activationKey(context.sessionID, input.id))(
+                  Effect.gen(function* () {
+                    const pack = yield* catalog.get(input.id)
+                    if (!pack) return yield* new ToolFailure({ message: `Capability manifest not found: ${input.id}` })
+                    const key = activationKey(context.sessionID, input.id)
+                    const durable = (yield* state.list(context.sessionID)).find(
+                      (activation) => activation.id === input.id,
+                    )
+                    const current = held.get(key)
+                    if (
+                      current &&
+                      (!durable ||
+                        current.fingerprint !== manifestFingerprint(pack) ||
+                        !sameProfiles(current.profiles, durable.profiles))
+                    ) {
+                      yield* dropHeld(key, current)
+                    }
+                    const profiles = validProfiles(pack, input.profiles ?? [CapabilityManifest.ID.make("default")])
+                    if (!profiles) {
+                      const missing =
+                        input.profiles?.find((profile) => !Object.hasOwn(pack.profiles, profile)) ?? "default"
+                      return yield* new ToolFailure({ message: `Capability profile not found: ${input.id}/${missing}` })
+                    }
+                    const dependencies = compatible(pack) ? yield* probe(pack) : []
+                    return yield* activateLocked(context.sessionID, pack, profiles, dependencies, true, context.agent)
+                  }),
+                ),
+              ),
             ),
         }),
         capability_disable: Tool.make({
@@ -549,16 +572,20 @@ const layer = Layer.effectDiscard(
             nextTurn: Schema.Boolean,
           }),
           execute: (input, context) =>
-            locks.withLock(activationKey(context.sessionID, input.id))(
-              Effect.uninterruptible(
-                Effect.gen(function* () {
-                  yield* state.disable({ sessionID: context.sessionID, id: input.id })
-                  const key = activationKey(context.sessionID, input.id)
-                  const current = held.get(key)
-                  failures.delete(key)
-                  if (current) yield* dropHeld(key, current)
-                  return { id: input.id, state: "disabled" as const, nextTurn: true }
-                }),
+            authorize(context, "capability_disable", input.id).pipe(
+              Effect.andThen(
+                locks.withLock(activationKey(context.sessionID, input.id))(
+                  Effect.uninterruptible(
+                    Effect.gen(function* () {
+                      yield* state.disable({ sessionID: context.sessionID, id: input.id })
+                      const key = activationKey(context.sessionID, input.id)
+                      const current = held.get(key)
+                      failures.delete(key)
+                      if (current) yield* dropHeld(key, current)
+                      return { id: input.id, state: "disabled" as const, nextTurn: true }
+                    }),
+                  ),
+                ),
               ),
             ),
         }),
@@ -569,6 +596,7 @@ const layer = Layer.effectDiscard(
           output: Schema.Struct({ capabilities: Schema.Array(CapabilityStatus).check(Schema.isMaxLength(256)) }),
           execute: (input, context) =>
             Effect.gen(function* () {
+              yield* authorize(context, "capability_status", input.id ?? "*")
               const installed = (yield* catalog.list()).filter((pack) => input.id === undefined || pack.id === input.id)
               const activations = yield* state.status(context.sessionID)
               const active = new Map(activations.map((item) => [item.id, item]))
