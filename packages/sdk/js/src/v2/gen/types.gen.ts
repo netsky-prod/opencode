@@ -1162,6 +1162,7 @@ export type GlobalEvent = {
           reason: "auto" | "manual"
           text: string
           recent: string
+          currentTurn?: string
         }
       }
     | {
@@ -3772,6 +3773,7 @@ export type SyncEventSessionNextCompactionEnded = {
       reason: "auto" | "manual"
       text: string
       recent: string
+      currentTurn?: string
     }
   }
 }
@@ -4143,6 +4145,7 @@ export type SessionMessageCompaction = {
   reason: "auto" | "manual"
   summary: string
   recent: string
+  currentTurn?: string
   id: string
   metadata?: {
     [key: string]: unknown
@@ -4712,6 +4715,7 @@ export type SessionNextCompactionEnded = {
     reason: "auto" | "manual"
     text: string
     recent: string
+    currentTurn?: string
   }
 }
 
@@ -6620,6 +6624,7 @@ export type EventSessionNextCompactionEnded = {
     reason: "auto" | "manual"
     text: string
     recent: string
+    currentTurn?: string
   }
 }
 

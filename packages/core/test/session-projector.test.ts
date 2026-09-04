@@ -332,6 +332,7 @@ describe("SessionProjector", () => {
         reason: "manual",
         text: "summary",
         recent: "recent context",
+        currentTurn: "current request",
       })
 
       const rows = yield* db
@@ -359,6 +360,7 @@ describe("SessionProjector", () => {
       expect(messages.find((message) => message.type === "compaction")).toMatchObject({
         summary: "summary",
         recent: "recent context",
+        currentTurn: "current request",
       })
       expect(
         yield* db.select().from(SessionTable).where(eq(SessionTable.id, sessionID)).get().pipe(Effect.orDie),

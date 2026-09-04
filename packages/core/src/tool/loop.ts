@@ -64,20 +64,21 @@ export const CheckpointInput = Schema.Struct({
   reason: Schema.optional(Schema.String),
 })
 
-export const WakeupInput = Schema.Union([
-  Schema.Struct({
-    id: SessionLoop.ID,
-    action: Schema.Literal("schedule"),
-    in: Schema.String,
-    reason: Schema.Trim.pipe(Schema.check(Schema.isNonEmpty())),
+export const WakeupInput = Schema.Struct({
+  id: SessionLoop.ID.annotate({ description: "Durable loop ID" }),
+  action: Schema.Literals(["schedule", "pause", "complete"]).annotate({
+    description: "Schedule another wake-up, pause the loop, or complete it",
   }),
-  Schema.Struct({
-    id: SessionLoop.ID,
-    action: Schema.Literals(["pause", "complete"]),
-    reason: Schema.Trim.pipe(Schema.check(Schema.isNonEmpty())),
-    checkpoint: Schema.optional(CheckpointPatch),
+  in: Schema.optional(Schema.String).annotate({
+    description: "Delay before the next wake-up; required only when action is schedule",
   }),
-])
+  reason: Schema.Trim.pipe(Schema.check(Schema.isNonEmpty())).annotate({
+    description: "Non-empty reason for the scheduling or state change",
+  }),
+  checkpoint: Schema.optional(CheckpointPatch).annotate({
+    description: "Checkpoint update; allowed only when pausing or completing",
+  }),
+})
 
 const ListInput = Schema.Struct({})
 const DeleteInput = Schema.Struct({ id: SessionLoop.ID })
@@ -108,6 +109,27 @@ const parse = (value: string) =>
     try: () => parseDelay(value),
     catch: () => new ToolFailure({ message: "Invalid loop duration" }),
   })
+
+const validateWakeup = (input: typeof WakeupInput.Type) => {
+  if (input.action === "schedule") {
+    if (input.in === undefined) return Effect.fail(new ToolFailure({ message: "Scheduled wake-up requires a delay" }))
+    if (input.checkpoint !== undefined) {
+      return Effect.fail(new ToolFailure({ message: "Scheduled wake-up cannot include a checkpoint" }))
+    }
+    return Effect.void
+  }
+  if (input.in !== undefined) {
+    return Effect.fail(new ToolFailure({ message: "Paused or completed wake-up cannot include a delay" }))
+  }
+  return Effect.void
+}
+
+const recoverableError = (fallback: string) => (error: unknown) => {
+  if (error instanceof SessionLoop.InvalidInput || error instanceof ToolFailure) {
+    return new ToolFailure({ message: error.message })
+  }
+  return new ToolFailure({ message: fallback })
+}
 
 const layer = Layer.effectDiscard(
   Effect.gen(function* () {
@@ -218,7 +240,7 @@ const layer = Layer.effectDiscard(
                 reason: input.reason,
               })
               return { message: summary(loop) }
-            }).pipe(Effect.mapError(() => new ToolFailure({ message: "Unable to update loop checkpoint" }))),
+            }).pipe(Effect.mapError(recoverableError("Unable to update loop checkpoint"))),
         }),
         loop_delete: Tool.make({
           description: "Delete a durable loop owned by the current session.",
@@ -250,6 +272,7 @@ const layer = Layer.effectDiscard(
           toModelOutput,
           execute: (input, context) =>
             Effect.gen(function* () {
+              yield* validateWakeup(input)
               yield* (context.permission ?? permission).assert({
                 action: "loop",
                 resources: [input.id],
@@ -265,7 +288,7 @@ const layer = Layer.effectDiscard(
                       sessionID: context.sessionID,
                       id: input.id,
                       state: "active",
-                      nextRunAt: now + (yield* parse(input.in)),
+                      nextRunAt: now + (yield* parse(input.in!)),
                       reason: input.reason,
                       now,
                     })
@@ -278,7 +301,7 @@ const layer = Layer.effectDiscard(
                       now,
                     })
               return { message: summary(loop) }
-            }).pipe(Effect.mapError(() => new ToolFailure({ message: "Unable to update loop wake-up" }))),
+            }).pipe(Effect.mapError(recoverableError("Unable to update loop wake-up"))),
         }),
       })
       .pipe(Effect.orDie)

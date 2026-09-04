@@ -29,6 +29,7 @@ import { SessionCompaction } from "../compaction"
 import { SessionEvent } from "../event"
 import { SessionHistory } from "../history"
 import { SessionInput } from "../input"
+import { SessionLoopContext } from "../loop-context"
 import { SessionSchema } from "../schema"
 import { SessionStore } from "../store"
 import { type RunError, Service } from "./index"
@@ -103,6 +104,7 @@ const layer = Layer.effect(
     const systemContext = yield* SystemContextRegistry.Service
     const skillGuidance = yield* SkillGuidance.Service
     const referenceGuidance = yield* ReferenceGuidance.Service
+    const loopContext = yield* SessionLoopContext.Service
     const config = yield* Config.Service
     const snapshots = yield* Snapshot.Service
     const db = (yield* Database.Service).db
@@ -200,6 +202,17 @@ const layer = Layer.effect(
       const model = yield* models.resolve(session)
       const entries = yield* SessionHistory.entriesForRunner(db, session.id, system.baselineSeq)
       const context = entries.map((entry) => entry.message)
+      const turn = context.slice(
+        context.findLastIndex((message) => message.type === "assistant" && message.finish !== "tool-calls") + 1,
+      )
+      const currentTurn = turn.flatMap((message) => (message.type === "user" ? [message.text] : [])).join("\n")
+      const compactedTurn = turn.findLast((message) => message.type === "compaction")
+      const loops = yield* loopContext
+        .load({
+          sessionID: session.id,
+          currentTurn: currentTurn || (compactedTurn?.type === "compaction" ? (compactedTurn.currentTurn ?? "") : ""),
+        })
+        .pipe(Effect.flatMap(SystemContext.initialize))
       const isLastStep = agent.info?.steps !== undefined && currentStep >= agent.info.steps
       const toolMaterialization = isLastStep ? undefined : yield* tools.materialize(session.id, agent.info?.permissions)
       const promptCacheKey = /^ses_[0-9a-f]{64}$/.test(session.id) ? session.id.slice(4) : session.id
@@ -213,7 +226,7 @@ const layer = Layer.effect(
           },
         },
         providerOptions: { openai: { promptCacheKey } },
-        system: [agent.info?.system, system.baseline]
+        system: [agent.info?.system, system.baseline, loops.baseline]
           .filter((part): part is string => part !== undefined && part.length > 0)
           .map(SystemPart.make),
         messages: [...toLLMMessages(context, model), ...(isLastStep ? [Message.assistant(MAX_STEPS_PROMPT)] : [])],
@@ -433,6 +446,7 @@ export const node = makeLocationNode({
     SystemContextRegistry.node,
     SkillGuidance.node,
     ReferenceGuidance.node,
+    SessionLoopContext.node,
     Config.node,
     Snapshot.node,
     Database.node,

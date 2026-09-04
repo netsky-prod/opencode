@@ -426,6 +426,7 @@ export namespace Compaction {
       reason: Started.data.fields.reason,
       text: Schema.String,
       recent: Schema.String,
+      currentTurn: Schema.String.pipe(optional),
     },
   })
   export type Ended = typeof Ended.Type

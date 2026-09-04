@@ -1,5 +1,5 @@
 import { describe, expect } from "bun:test"
-import { Effect, Layer } from "effect"
+import { Effect, Layer, Schema } from "effect"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { CapabilityState } from "@opencode-ai/core/capability/state"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
@@ -80,6 +80,22 @@ const call = (name: string, input: unknown, currentSessionID = sessionID) => ({
 })
 
 describe("LoopTool", () => {
+  it.effect("exposes one provider-friendly wake-up object schema", () =>
+    Effect.sync(() => {
+      expect(Schema.toJsonSchemaDocument(LoopTool.WakeupInput).schema).toMatchObject({
+        type: "object",
+        properties: {
+          id: {},
+          action: { enum: ["schedule", "pause", "complete"] },
+          in: {},
+          reason: {},
+          checkpoint: {},
+        },
+        required: expect.arrayContaining(["id", "action", "reason"]),
+      })
+    }),
+  )
+
   it.effect("registers all loop tools and creates fixed and adaptive loops", () =>
     Effect.gen(function* () {
       yield* setup
@@ -243,10 +259,73 @@ describe("LoopTool", () => {
           registry,
           call("loop_checkpoint", { id: loop.id, state: "completed", reason: " ", ...checkpoint }),
         ),
-      ).toEqual({ type: "error", value: "Unable to update loop checkpoint" })
+      ).toEqual({ type: "error", value: "Adaptive completion requires a reason" })
       expect(
         yield* executeTool(registry, call("loop_wakeup", { id: loop.id, action: "complete", reason: " ", checkpoint })),
       ).toMatchObject({ type: "error", value: expect.stringContaining("Invalid tool input") })
+      expect((yield* loops.get({ sessionID, id: loop.id })).state).toBe("active")
+    }),
+  )
+
+  it.effect("validates wake-up action fields after decoding the flat provider schema", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const registry = yield* ToolRegistry.Service
+      const loops = yield* SessionLoop.Service
+      const loop = yield* loops.create({ sessionID, prompt: "ship", mode: "adaptive", now: 1_000 })
+
+      expect(
+        yield* executeTool(registry, call("loop_wakeup", { id: loop.id, action: "schedule", reason: "later" })),
+      ).toEqual({ type: "error", value: "Scheduled wake-up requires a delay" })
+      expect(
+        yield* executeTool(
+          registry,
+          call("loop_wakeup", { id: loop.id, action: "schedule", in: "10s", reason: "later", checkpoint: {} }),
+        ),
+      ).toEqual({ type: "error", value: "Scheduled wake-up cannot include a checkpoint" })
+      expect(
+        yield* executeTool(
+          registry,
+          call("loop_wakeup", { id: loop.id, action: "pause", in: "10s", reason: "operator paused" }),
+        ),
+      ).toEqual({ type: "error", value: "Paused or completed wake-up cannot include a delay" })
+      expect((yield* loops.get({ sessionID, id: loop.id })).state).toBe("active")
+      expect(assertions).toHaveLength(0)
+    }),
+  )
+
+  it.effect("returns actionable safe evidence errors from checkpoint and wake-up completion", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const registry = yield* ToolRegistry.Service
+      const loops = yield* SessionLoop.Service
+      const loop = yield* loops.create({
+        sessionID,
+        prompt: "ship",
+        mode: "adaptive",
+        checkpoint: { acceptanceCriteria: ["CI is green"] },
+        now: 1_000,
+      })
+      const mismatched = {
+        verifiedFacts: [{ claim: "CI now looks green", evidence: ["secret://must-not-leak"] }],
+      }
+
+      for (const result of [
+        yield* executeTool(
+          registry,
+          call("loop_checkpoint", { id: loop.id, state: "completed", reason: "done", ...mismatched }),
+        ),
+        yield* executeTool(
+          registry,
+          call("loop_wakeup", { id: loop.id, action: "complete", reason: "done", checkpoint: mismatched }),
+        ),
+      ]) {
+        expect(result).toEqual({
+          type: "error",
+          value: "Adaptive completion requires verified acceptance criteria with evidence",
+        })
+        expect(JSON.stringify(result)).not.toContain("secret://must-not-leak")
+      }
       expect((yield* loops.get({ sessionID, id: loop.id })).state).toBe("active")
     }),
   )

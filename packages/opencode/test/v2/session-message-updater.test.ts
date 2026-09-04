@@ -253,6 +253,7 @@ test("compaction events reduce to compaction message only when completed", () =>
         reason: "auto",
         text: "final summary",
         recent: "recent context",
+        currentTurn: "current request",
       },
     } satisfies SessionEvent.Event),
   )
@@ -264,6 +265,7 @@ test("compaction events reduce to compaction message only when completed", () =>
     reason: "auto",
     summary: "final summary",
     recent: "recent context",
+    currentTurn: "current request",
     time: { created: DateTime.makeUnsafe(4) },
   })
 })

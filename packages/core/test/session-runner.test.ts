@@ -27,6 +27,8 @@ import { Snapshot } from "@opencode-ai/core/snapshot"
 import { ContextSnapshotDecodeError } from "@opencode-ai/core/session/error"
 import { SessionEvent } from "@opencode-ai/core/session/event"
 import { SessionInput } from "@opencode-ai/core/session/input"
+import { SessionLoop } from "@opencode-ai/core/session/loop"
+import { SessionLoopContext } from "@opencode-ai/core/session/loop-context"
 import { SessionMessage } from "@opencode-ai/core/session/message"
 import { Prompt } from "@opencode-ai/core/session/prompt"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
@@ -259,6 +261,8 @@ const it = testEffect(
       QuestionV2.node,
       SessionProjector.node,
       SessionStore.node,
+      SessionLoop.node,
+      SessionLoopContext.node,
       ApplicationTools.node,
       AgentV2.node,
       ToolRegistry.node,
@@ -1075,6 +1079,137 @@ describe("SessionRunnerLLM", () => {
     }),
   )
 
+  it.effect("injects fresh active loop context into every provider turn including the first after compaction", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* SessionV2.Service
+      const loops = yield* SessionLoop.Service
+      const events = yield* EventV2.Service
+      const loop = yield* loops.create({
+        sessionID,
+        prompt: "Ship",
+        mode: "adaptive",
+        checkpoint: {
+          objective: "Ship capability packs",
+          verifiedFacts: [{ claim: "Build passed", evidence: ["/tmp/build.log"] }],
+          artifacts: ["/tmp/build.log"],
+          nextAction: "Run smoke test",
+        },
+        now: 1_000,
+      })
+      requests.length = 0
+      response = []
+
+      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Start" }), resume: false })
+      yield* session.resume(sessionID)
+      yield* loops.checkpoint({
+        sessionID,
+        id: loop.id,
+        checkpoint: { nextAction: "Verify deployment" },
+        now: 2_000,
+      })
+      const compactionID = SessionMessage.ID.create()
+      yield* events.publish(SessionEvent.Compaction.Started, {
+        sessionID,
+        messageID: compactionID,
+        timestamp: DateTime.makeUnsafe(3_000),
+        reason: "manual",
+      })
+      yield* events.publish(SessionEvent.Compaction.Ended, {
+        sessionID,
+        messageID: compactionID,
+        timestamp: DateTime.makeUnsafe(3_001),
+        reason: "manual",
+        text: "summary without loop state",
+        recent: "",
+      })
+      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Continue" }), resume: false })
+      yield* session.resume(sessionID)
+
+      expect(requests).toHaveLength(2)
+      expect(requests[0]?.system.map((part) => part.text).join("\n")).toContain(`Loop ${loop.id} (adaptive, active)`)
+      expect(requests[0]?.system.map((part) => part.text).join("\n")).toContain('next action: "Run smoke test"')
+      expect(requests[1]?.system.map((part) => part.text).join("\n")).toContain('objective: "Ship capability packs"')
+      expect(requests[1]?.system.map((part) => part.text).join("\n")).toContain('artifact path: "/tmp/build.log"')
+      expect(requests[1]?.system.map((part) => part.text).join("\n")).toContain('next action: "Verify deployment"')
+    }),
+  )
+
+  it.effect("injects paused loop context only on provider turns that explicitly name the loop", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* SessionV2.Service
+      const loops = yield* SessionLoop.Service
+      const loop = yield* loops.create({
+        sessionID,
+        prompt: "Wait",
+        mode: "adaptive",
+        checkpoint: { objective: "Paused provider loop", nextAction: "Wait" },
+        now: 1_000,
+      })
+      yield* loops.update({ sessionID, id: loop.id, state: "paused", reason: "waiting", now: 2_000 })
+      requests.length = 0
+      responses = [
+        fragmentFixture("text", "paused-unreferenced", ["No reference"]).completeEvents,
+        fragmentFixture("text", "paused-referenced", ["Referenced"]).completeEvents,
+        fragmentFixture("text", "paused-cleared", ["Unrelated"]).completeEvents,
+      ]
+
+      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "List paused work" }), resume: false })
+      yield* session.resume(sessionID)
+      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: `Resume ${loop.id}` }), resume: false })
+      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Use the latest details too" }), resume: false })
+      yield* session.resume(sessionID)
+      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Continue unrelated work" }), resume: false })
+      yield* session.resume(sessionID)
+
+      expect(requests).toHaveLength(3)
+      expect(requests[0]?.system.map((part) => part.text).join("\n")).not.toContain(loop.id)
+      expect(requests[1]?.system.map((part) => part.text).join("\n")).toContain(`Loop ${loop.id} (adaptive, paused)`)
+      expect(requests[2]?.system.map((part) => part.text).join("\n")).not.toContain(loop.id)
+    }),
+  )
+
+  it.effect("does not treat a historical paused-loop ID in compacted recent context as a current-turn reference", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* SessionV2.Service
+      const loops = yield* SessionLoop.Service
+      const events = yield* EventV2.Service
+      const loop = yield* loops.create({
+        sessionID,
+        prompt: "Wait",
+        mode: "adaptive",
+        checkpoint: { objective: "Historically referenced paused loop", nextAction: "Wait" },
+        now: 1_000,
+      })
+      yield* loops.update({ sessionID, id: loop.id, state: "paused", reason: "waiting", now: 2_000 })
+      const compactionID = SessionMessage.ID.create()
+      yield* events.publish(SessionEvent.Compaction.Started, {
+        sessionID,
+        messageID: compactionID,
+        timestamp: DateTime.makeUnsafe(3_000),
+        reason: "manual",
+      })
+      yield* events.publish(SessionEvent.Compaction.Ended, {
+        sessionID,
+        messageID: compactionID,
+        timestamp: DateTime.makeUnsafe(3_001),
+        reason: "manual",
+        text: "summary",
+        recent: `[User]: Resume ${loop.id}\n\n[Assistant]: Noted\n\n[User]: Continue unrelated work`,
+        currentTurn: "Continue unrelated work",
+      })
+      requests.length = 0
+      response = fragmentFixture("text", "post-compaction", ["Continued"]).completeEvents
+
+      yield* session.resume(sessionID)
+
+      expect(requests).toHaveLength(1)
+      expect(requests[0]?.system.map((part) => part.text).join("\n")).not.toContain(loop.id)
+    }),
+  )
+
   it.effect("automatically compacts into a completed summary and retained recent turn", () =>
     Effect.gen(function* () {
       yield* setup
@@ -1121,6 +1256,7 @@ describe("SessionRunnerLLM", () => {
       expect(context[0]).toMatchObject({
         type: "compaction",
         summary: "## Objective\n- Preserve the task",
+        currentTurn: "Recent exact request ".repeat(180),
       })
 
       requests.length = 0

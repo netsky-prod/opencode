@@ -1,0 +1,15 @@
+{
+  "status": "passed",
+  "checks": {
+    "compactionPersisted": true,
+    "providerWakeFinished": true,
+    "providerSystemContextCaptured": true,
+    "scheduledUserPromptMarkerFree": true,
+    "realProviderObservedAmbientMarkerAfterRestartAndCompaction": true,
+    "noLoopListDuringAmbientGate": true,
+    "exactEvidenceInstructionReachedProvider": true,
+    "noToolErrors": true,
+    "noGoalTools": true
+  },
+  "trackedEvidence": "concise redacted result only; detailed diagnostics remain local and ignored"
+}

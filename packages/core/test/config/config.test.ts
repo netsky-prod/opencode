@@ -1,7 +1,7 @@
 import path from "path"
 import fs from "fs/promises"
 import { describe, expect } from "bun:test"
-import { Effect, Layer, Schema } from "effect"
+import { Cause, Effect, Exit, Layer, Schema } from "effect"
 import { FastCheck } from "effect/testing"
 import { Config } from "@opencode-ai/core/config"
 import { ConfigProvider } from "@opencode-ai/core/config/provider"
@@ -49,6 +49,23 @@ const provider = {
     body: {},
   },
   models: {},
+}
+
+function withEnv<A, E, R>(name: string, value: string | undefined, effect: Effect.Effect<A, E, R>) {
+  return Effect.acquireUseRelease(
+    Effect.sync(() => {
+      const previous = process.env[name]
+      if (value === undefined) delete process.env[name]
+      else process.env[name] = value
+      return previous
+    }),
+    () => effect,
+    (previous) =>
+      Effect.sync(() => {
+        if (previous === undefined) delete process.env[name]
+        else process.env[name] = previous
+      }),
+  )
 }
 
 describe("Config", () => {
@@ -207,6 +224,127 @@ describe("Config", () => {
         }),
       ),
     ),
+  )
+
+  it.live("resolves exact environment tokens throughout nested v1 provider options", () =>
+    Effect.acquireRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ).pipe(
+      Effect.flatMap((tmp) =>
+        withEnv(
+          "CORE_CONFIG_PROVIDER_SECRET",
+          'secret-"value',
+          Effect.gen(function* () {
+            yield* Effect.promise(() =>
+              fs.writeFile(
+                path.join(tmp.path, "opencode.json"),
+                JSON.stringify({
+                  model: "bridge/model",
+                  provider: {
+                    bridge: {
+                      npm: "@ai-sdk/openai-compatible",
+                      options: {
+                        apiKey: "{env:CORE_CONFIG_PROVIDER_SECRET}",
+                        baseURL: "https://bridge.example.test/v1",
+                        headers: {
+                          "x-provider-secret": "prefix-{env:CORE_CONFIG_PROVIDER_SECRET}",
+                          "x-shell-syntax": "${CORE_CONFIG_PROVIDER_SECRET}",
+                        },
+                        body: { nested: "{env:CORE_CONFIG_PROVIDER_SECRET}" },
+                      },
+                    },
+                  },
+                }),
+              ),
+            )
+
+            const documents = yield* Config.Service.use((config) => config.entries()).pipe(
+              Effect.provide(testLayer(tmp.path)),
+              Effect.map((entries) => entries.filter((entry) => entry.type === "document")),
+            )
+            const bridge = documents[0]?.info.providers?.bridge
+
+            expect(bridge?.api).toMatchObject({
+              type: "aisdk",
+              package: "@ai-sdk/openai-compatible",
+              url: "https://bridge.example.test/v1",
+              settings: { apiKey: 'secret-"value' },
+            })
+            expect(bridge?.request).toEqual({
+              headers: {
+                "x-provider-secret": 'prefix-secret-"value',
+                "x-shell-syntax": "${CORE_CONFIG_PROVIDER_SECRET}",
+              },
+              body: { nested: 'secret-"value' },
+            })
+          }),
+        ),
+      ),
+    ),
+  )
+
+  it.live(
+    "fails location config loading instead of exposing lower-priority settings when an env token is missing",
+    () =>
+      Effect.acquireRelease(
+        Effect.promise(() => tmpdir()),
+        (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+      ).pipe(
+        Effect.flatMap((tmp) =>
+          withEnv(
+            "CORE_CONFIG_MISSING_PROVIDER_SECRET",
+            undefined,
+            Effect.gen(function* () {
+              const globalDirectory = path.join(tmp.path, "global")
+              yield* Effect.promise(() =>
+                Promise.all([
+                  fs.mkdir(globalDirectory, { recursive: true }),
+                  fs.writeFile(
+                    path.join(tmp.path, "opencode.json"),
+                    JSON.stringify({
+                      model: "private/required-model",
+                      provider: {
+                        private: {
+                          npm: "@ai-sdk/openai-compatible",
+                          options: { apiKey: "{env:CORE_CONFIG_MISSING_PROVIDER_SECRET}" },
+                        },
+                      },
+                      experimental: {
+                        policies: [{ effect: "deny", action: "provider.use", resource: "fallback" }],
+                      },
+                    }),
+                  ),
+                ]),
+              )
+              yield* Effect.promise(() =>
+                fs.writeFile(
+                  path.join(globalDirectory, "opencode.json"),
+                  JSON.stringify({
+                    model: "fallback/exposed-model",
+                    providers: { fallback: provider },
+                    experimental: {
+                      policies: [{ effect: "allow", action: "provider.use", resource: "fallback" }],
+                    },
+                  }),
+                ),
+              )
+
+              const exit = yield* Config.Service.use((config) => config.entries()).pipe(
+                Effect.provide(testLayer(tmp.path, globalDirectory)),
+                Effect.exit,
+              )
+              expect(Exit.isFailure(exit)).toBe(true)
+              if (Exit.isFailure(exit)) {
+                const error = Cause.squash(exit.cause)
+                expect(error).toBeInstanceOf(Config.UnresolvedEnvironmentError)
+                expect(error).toMatchObject({ path: path.join(tmp.path, "opencode.json"), count: 1 })
+                expect(Cause.pretty(exit.cause)).not.toContain("fallback/exposed-model")
+              }
+            }),
+          ),
+        ),
+      ),
   )
 
   it.live("does not load legacy config.json files", () =>

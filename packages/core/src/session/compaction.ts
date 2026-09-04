@@ -120,6 +120,14 @@ const serialize = (message: SessionMessage.Message) => {
   return ""
 }
 
+const currentTurn = (entries: readonly Entry[]) =>
+  entries
+    .slice(
+      entries.findLastIndex((entry) => entry.message.type === "assistant" && entry.message.finish !== "tool-calls") + 1,
+    )
+    .flatMap((entry) => (entry.message.type === "user" ? [entry.message.text] : []))
+    .join("\n")
+
 const settings = (documents: readonly Config.Entry[]) => {
   const configured = documents
     .filter((entry): entry is Config.Document => entry.type === "document")
@@ -226,6 +234,7 @@ export const make = (dependencies: Dependencies) => {
       reason: "auto",
       text: summary,
       recent: selected.recent,
+      currentTurn: currentTurn(input.entries),
     })
     return true
   })

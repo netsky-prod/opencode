@@ -119,10 +119,55 @@ export class Directory extends Schema.Class<Directory>("Config.Directory")({
 
 export type Entry = Document | Directory
 
+export class UnresolvedEnvironmentError extends Schema.TaggedErrorClass<UnresolvedEnvironmentError>()(
+  "Config.UnresolvedEnvironmentError",
+  {
+    path: Schema.String,
+    count: Schema.Number,
+  },
+) {}
+
 export function latest<K extends keyof Info>(entries: readonly Entry[], key: K): Info[K] | undefined {
   return entries
     .filter((entry): entry is Document => entry.type === "document")
     .findLast((entry) => entry.info[key] !== undefined)?.info[key]
+}
+
+const envToken = /\{env:([^}]+)\}/g
+const envName = /^[A-Za-z_][A-Za-z0-9_]*$/
+
+function resolveEnvTokens(input: unknown): { value: unknown; missing: number } {
+  if (typeof input === "string") {
+    let missing = 0
+    const value = input.replace(envToken, (token, name: string) => {
+      if (!envName.test(name)) {
+        missing += 1
+        return token
+      }
+      const resolved = process.env[name]
+      if (resolved === undefined) {
+        missing += 1
+        return token
+      }
+      return resolved
+    })
+    return { value, missing }
+  }
+  if (Array.isArray(input)) {
+    const resolved = input.map(resolveEnvTokens)
+    return {
+      value: resolved.map((item) => item.value),
+      missing: resolved.reduce((total, item) => total + item.missing, 0),
+    }
+  }
+  if (typeof input === "object" && input !== null) {
+    const resolved = Object.entries(input).map(([key, value]) => [key, resolveEnvTokens(value)] as const)
+    return {
+      value: Object.fromEntries(resolved.map(([key, item]) => [key, item.value])),
+      missing: resolved.reduce((total, [, item]) => total + item.missing, 0),
+    }
+  }
+  return { value: input, missing: 0 }
 }
 
 export interface Interface {
@@ -145,17 +190,25 @@ const layer = Layer.effect(
     const decodeV1Info = Schema.decodeUnknownOption(ConfigV1.Info, decodeOptions)
 
     const loadFile = Effect.fnUntraced(function* (filepath: string) {
-      const text = yield* fs.readFileStringSafe(filepath)
+      const text = yield* fs.readFileStringSafe(filepath).pipe(Effect.orDie)
       if (!text) return
 
       const errors: ParseError[] = []
       const input: unknown = parse(text, errors, { allowTrailingComma: true })
       if (errors.length) return
+      const resolved = resolveEnvTokens(input)
+      if (resolved.missing) {
+        yield* Effect.logError("configuration environment token could not be resolved", {
+          path: filepath,
+          count: resolved.missing,
+        })
+        yield* Effect.die(new UnresolvedEnvironmentError({ path: filepath, count: resolved.missing }))
+      }
 
       const info = Option.getOrUndefined(
-        ConfigMigrateV1.isV1(input)
-          ? decodeV1Info(input).pipe(Option.map(ConfigMigrateV1.migrate), Option.flatMap(decodeInfo))
-          : decodeInfo(input),
+        ConfigMigrateV1.isV1(resolved.value)
+          ? decodeV1Info(resolved.value).pipe(Option.map(ConfigMigrateV1.migrate), Option.flatMap(decodeInfo))
+          : decodeInfo(resolved.value),
       )
       if (!info) return
       return new Document({ type: "document", path: filepath, info })
@@ -194,10 +247,9 @@ const layer = Layer.effect(
     // Search starts nearby, so reverse the results before applying them.
     const directPaths = discovered.filter((item) => path.basename(item) !== ".opencode").toReversed()
     const direct = yield* Effect.forEach(directPaths, loadFile).pipe(
-      Effect.orDie,
       Effect.map((configs) => configs.filter((config): config is Document => config !== undefined)),
     )
-    const supplementary = yield* Effect.forEach(directories, loadDirectory).pipe(Effect.orDie)
+    const supplementary = yield* Effect.forEach(directories, loadDirectory)
     // Apply general settings first and more specific settings last:
     // global config, project files, then `.opencode` files.
     const configs = [...(supplementary[0] ?? []), ...direct, ...supplementary.slice(1).flat()]
