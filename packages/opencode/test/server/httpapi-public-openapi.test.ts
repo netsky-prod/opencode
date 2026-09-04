@@ -134,6 +134,12 @@ describe("PublicApi OpenAPI v2 errors", () => {
     expect(spec.paths["/api/reference"]?.get).toBeDefined()
   })
 
+  test("requires the OAuth callback body without changing unrelated legacy bodies", () => {
+    const spec = OpenApi.fromApi(PublicApi) as OpenApiSpec
+    expect(spec.paths["/mcp/{name}/auth/callback"]?.post?.requestBody?.required).toBe(true)
+    expect(spec.paths["/session"]?.post?.requestBody?.required).toBeUndefined()
+  })
+
   test("preserves required request bodies for v2 mutations", () => {
     const spec = OpenApi.fromApi(PublicApi) as OpenApiSpec
 

@@ -109,8 +109,11 @@ function matchLegacyOpenApi(input: Record<string, unknown>) {
       const isV2Api = isV2ApiPath(path)
       if (operation.requestBody) {
         // The legacy OpenAPI surface never marked request bodies as required.
-        // Keep that SDK surface stable while the HttpApi spec is tightened.
-        if (!isV2Api) delete operation.requestBody.required
+        // Keep that SDK surface stable except the OAuth callback, whose code
+        // and flowToken must be supplied together to complete the pending flow.
+        if (!isV2Api && !(path === "/mcp/{name}/auth/callback" && method === "post")) {
+          delete operation.requestBody.required
+        }
         const body = operation.requestBody.content?.["application/json"]
         if (body?.schema) body.schema = stripOptionalNull(structuredClone(body.schema))
         if (path === "/experimental/workspace" && method === "post") {

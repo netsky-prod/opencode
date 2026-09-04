@@ -212,6 +212,11 @@ describe("built-in capability end-to-end behavior", () => {
 
       const registry = yield* ToolRegistry.Service
       const before = yield* registry.materialize(browserSession)
+      expect(
+        names(before)
+          .filter((name) => name.startsWith("capability_"))
+          .toSorted(),
+      ).toEqual(["capability_disable", "capability_enable", "capability_search", "capability_status"])
       expect(names(before)).not.toContain("browser_playwright_browser_navigate")
       yield* settle(before, browserSession, "capability_enable", { id: "browser", profiles: ["default"] })
       const browserTools = yield* registry.materialize(browserSession)

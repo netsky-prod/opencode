@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { Context, Effect, Layer, LayerMap, Option } from "effect"
 import { Node } from "@opencode-ai/core/effect/app-node"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
+import { CapabilityRuntime } from "@opencode-ai/core/capability/runtime"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Location } from "@opencode-ai/core/location"
 import { LocationServiceMap } from "@opencode-ai/core/location-service-map"
@@ -86,6 +87,9 @@ describe("node build", () => {
     const ref = Location.Ref.make({ directory: AbsolutePath.make(tmp.path) })
     const layer = AppNodeBuilder.build(LayerNode.group([Project.node, LocationServiceMap.node]), [
       [Project.node, projectLayer],
+      // Location services require the embedding host's runtime adapter. This
+      // graph-sharing test never activates capabilities; fail if it starts one.
+      [CapabilityRuntime.node, Layer.mock(CapabilityRuntime.Service, {})],
     ])
     const program = Effect.gen(function* () {
       yield* Project.Service

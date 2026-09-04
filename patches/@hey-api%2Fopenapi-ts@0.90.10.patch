@@ -1,0 +1,24 @@
+diff --git a/dist/openApi-Gs-XGatv.mjs b/dist/openApi-Gs-XGatv.mjs
+--- a/dist/openApi-Gs-XGatv.mjs
++++ b/dist/openApi-Gs-XGatv.mjs
+@@ -5726,7 +5726,7 @@
+ 				const property = properties[originalName];
+ 				const name = conflicts.has(originalName) ? `${location}_${originalName}` : originalName;
+ 				const signatureParameter = {
+-					isRequired: property.required?.includes(originalName) ?? false,
++					isRequired: (operation.body.required ?? false) && (operation.body.schema.required?.includes(originalName) ?? false),
+ 					name,
+ 					schema: property
+ 				};
+diff --git a/dist/openApi-Dy5wknYZ.cjs b/dist/openApi-Dy5wknYZ.cjs
+--- a/dist/openApi-Dy5wknYZ.cjs
++++ b/dist/openApi-Dy5wknYZ.cjs
+@@ -5753,7 +5753,7 @@
+ 				const property = properties[originalName];
+ 				const name = conflicts.has(originalName) ? `${location}_${originalName}` : originalName;
+ 				const signatureParameter = {
+-					isRequired: property.required?.includes(originalName) ?? false,
++					isRequired: (operation.body.required ?? false) && (operation.body.schema.required?.includes(originalName) ?? false),
+ 					name,
+ 					schema: property
+ 				};

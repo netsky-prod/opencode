@@ -565,3 +565,18 @@ Each slice lands only after its focused tests and native build pass. Later slice
 8. Security and deployment tools remain governed by existing permissions and never receive credentials through model-visible manifests.
 9. Qwen evals show a higher verified completion rate than the baseline without increasing default tool-schema context beyond the compact capability interface.
 10. The feature is documented and installable from the `netsky-prod/opencode` fork on supported platforms.
+
+## Implementation and verification map
+
+The authoring/runtime contract is documented in [capabilities.md](../../capabilities.md), with source-build and release instructions in [fork-release.md](../../fork-release.md). Built-in JSON and skill text use static Bun imports; custom packs and external executables remain outside the binary.
+
+| Criteria | Regression coverage                                                                                    |
+| -------- | ------------------------------------------------------------------------------------------------------ |
+| 1–4      | Core capability materialization/runtime/tool tests; OpenCode capability e2e and runtime tests          |
+| 5        | OpenCode capability e2e; real-browser/Swift fixture verifier tests and live Qwen traces                |
+| 6        | Core/OpenCode loop checkpoint, restart, compaction and wake tests                                      |
+| 7–8      | Operational pack smoke tests, permission/resource extraction tests and redaction tests                 |
+| 9        | Versioned capability eval runner; actual provider schema snapshots and external artifact/SQLite checks |
+| 10       | Compiled distribution probe, native build, SDK generator regression, installation tests and docs       |
+
+The SDK's flat OAuth callback requires both `code` and `flowToken`; the generator dependency patch preserves required bodies without making optional legacy bodies mandatory. The eval report includes the effective task digest as well as source identity. These mappings identify checks, not a claim that every platform or live task has passed; release evidence records actual commands and results.

@@ -2327,8 +2327,8 @@ export class Auth2 extends HeyApiClient {
       name: string
       directory?: string
       workspace?: string
-      code?: string
-      flowToken?: string
+      code: string
+      flowToken: string
     },
     options?: Options<never, ThrowOnError>,
   ) {
@@ -5094,7 +5094,7 @@ export class Revert extends HeyApiClient {
   public stage<ThrowOnError extends boolean = false>(
     parameters: {
       sessionID: string
-      messageID?: string
+      messageID: string
       files?: boolean
     },
     options?: Options<never, ThrowOnError>,
@@ -5203,8 +5203,8 @@ export class Permission2 extends HeyApiClient {
     parameters: {
       sessionID: string
       id?: string
-      action?: string
-      resources?: Array<string>
+      action: string
+      resources: Array<string>
       save?: Array<string>
       metadata?: {
         [key: string]: unknown
@@ -5290,7 +5290,7 @@ export class Permission2 extends HeyApiClient {
     parameters: {
       sessionID: string
       requestID: string
-      reply?: PermissionV2Reply
+      reply: PermissionV2Reply
       message?: string
     },
     options?: Options<never, ThrowOnError>,
@@ -5546,7 +5546,7 @@ export class Session3 extends HeyApiClient {
   public switchAgent<ThrowOnError extends boolean = false>(
     parameters: {
       sessionID: string
-      agent?: string
+      agent: string
     },
     options?: Options<never, ThrowOnError>,
   ) {
@@ -5585,7 +5585,7 @@ export class Session3 extends HeyApiClient {
   public switchModel<ThrowOnError extends boolean = false>(
     parameters: {
       sessionID: string
-      model?: ModelRef
+      model: ModelRef
     },
     options?: Options<never, ThrowOnError>,
   ) {
@@ -5625,7 +5625,7 @@ export class Session3 extends HeyApiClient {
     parameters: {
       sessionID: string
       id?: string
-      prompt?: PromptInput
+      prompt: PromptInput
       delivery?: "steer" | "queue"
       resume?: boolean
     },
@@ -5969,7 +5969,7 @@ export class Connect extends HeyApiClient {
         directory?: string
         workspace?: string
       }
-      key?: string
+      key: string
       label?: string
     },
     options?: Options<never, ThrowOnError>,
@@ -6015,8 +6015,8 @@ export class Connect extends HeyApiClient {
         directory?: string
         workspace?: string
       }
-      methodID?: string
-      inputs?: {
+      methodID: string
+      inputs: {
         [key: string]: string
       }
       label?: string
@@ -6289,7 +6289,7 @@ export class Credential extends HeyApiClient {
         directory?: string
         workspace?: string
       }
-      label?: string
+      label: string
     },
     options?: Options<never, ThrowOnError>,
   ) {

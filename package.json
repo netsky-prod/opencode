@@ -144,6 +144,7 @@
     "@types/node": "catalog:"
   },
   "patchedDependencies": {
+    "@hey-api/openapi-ts@0.90.10": "patches/@hey-api%2Fopenapi-ts@0.90.10.patch",
     "@dnd-kit/dom@0.5.0": "patches/@dnd-kit%2Fdom@0.5.0.patch",
     "@ff-labs/fff-bun@0.9.3": "patches/@ff-labs%2Ffff-bun@0.9.3.patch",
     "@npmcli/agent@4.0.2": "patches/@npmcli%2Fagent@4.0.2.patch",
