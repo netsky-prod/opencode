@@ -37,6 +37,15 @@ const builtIns = Layer.effectDiscard(
         baseline: (date) => `Today's date: ${date}`,
         update: (_previous, date) => `Today's date is now: ${date}`,
       }),
+      SystemContext.make({
+        key: SystemContext.Key.make("core/capabilities"),
+        codec: Schema.toCodecJson(Schema.String),
+        load: Effect.succeed(
+          "When the current tools cannot observe or complete the requested outcome, search the installed capability packs and autonomously enable the smallest sufficient set. Disable temporary packs when they are no longer useful.",
+        ),
+        baseline: (guidance) => guidance,
+        update: (_previous, guidance) => guidance,
+      }),
     ])
 
     yield* registry.register({ key: SystemContext.Key.make("core/builtins"), load: Effect.succeed(context) })

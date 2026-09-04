@@ -43,8 +43,17 @@ export interface Settlement {
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/v2/ToolRegistry") {}
 
-const registryLayer = Layer.effect(
-  Service,
+export interface MaterializationHooksInterface {
+  readonly register: (
+    prepare: (sessionID: SessionSchema.ID) => Effect.Effect<ReadonlySet<string>>,
+  ) => Effect.Effect<void, never, Scope.Scope>
+}
+
+export class MaterializationHooks extends Context.Service<MaterializationHooks, MaterializationHooksInterface>()(
+  "@opencode/v2/ToolRegistry/MaterializationHooks",
+) {}
+
+const registryLayer = Layer.effectContext(
   Effect.gen(function* () {
     const applications = yield* ApplicationTools.Service
     const capabilities = yield* CapabilityState.Service
@@ -52,6 +61,10 @@ const registryLayer = Layer.effect(
     type Registration = { readonly identity: object; readonly tool: AnyTool }
     type Active = ReadonlyMap<string, ReadonlySet<string>>
     const local = new Map<string, Array<{ readonly token: object; readonly registration: Registration }>>()
+    const materializationHooks: Array<{
+      readonly token: object
+      readonly prepare: (sessionID: SessionSchema.ID) => Effect.Effect<ReadonlySet<string>>
+    }> = []
 
     const visible = (registration: Registration, active: Active) => {
       const source = origin(registration.tool)
@@ -104,7 +117,7 @@ const registryLayer = Layer.effect(
         : { result, output: bounded.output }
     })
 
-    return Service.of({
+    const service = Service.of({
       register: Effect.fn("ToolRegistry.register")(function* (tools) {
         const entries = Object.entries(tools)
         if (entries.length === 0) return
@@ -127,8 +140,15 @@ const registryLayer = Layer.effect(
         )
       }),
       materialize: Effect.fn("ToolRegistry.materialize")(function* (sessionID, permissions = []) {
+        const unavailable = new Set(
+          (yield* Effect.forEach(materializationHooks, (hook) => hook.prepare(sessionID), {
+            concurrency: "unbounded",
+          })).flatMap((items) => [...items]),
+        )
         const active = new Map(
-          (yield* capabilities.list(sessionID)).map((activation) => [activation.id, new Set(activation.profiles)]),
+          (yield* capabilities.list(sessionID))
+            .filter((activation) => !unavailable.has(activation.id))
+            .map((activation) => [activation.id, new Set(activation.profiles)]),
         )
         const registrations = new Map<string, Registration>()
         for (const name of new Set([...applications.entries().keys(), ...local.keys()])) {
@@ -151,6 +171,22 @@ const registryLayer = Layer.effect(
         }
       }),
     })
+    const hooks = MaterializationHooks.of({
+      register: (prepare) =>
+        Effect.uninterruptible(
+          Effect.gen(function* () {
+            const token = {}
+            materializationHooks.push({ token, prepare })
+            yield* Effect.addFinalizer(() =>
+              Effect.sync(() => {
+                const index = materializationHooks.findIndex((hook) => hook.token === token)
+                if (index >= 0) materializationHooks.splice(index, 1)
+              }),
+            )
+          }),
+        ),
+    })
+    return Context.make(Service, service).pipe(Context.add(MaterializationHooks, hooks))
   }),
 )
 

@@ -72,6 +72,8 @@ describe("SystemContextBuiltIns", () => {
           "</env>",
           "",
           `Today's date: ${localDate(timestamp)}`,
+          "",
+          "When the current tools cannot observe or complete the requested outcome, search the installed capability packs and autonomously enable the smallest sufficient set. Disable temporary packs when they are no longer useful.",
         ].join("\n"),
       )
     }),
@@ -120,6 +122,8 @@ describe("SystemContextBuiltIns", () => {
           "</env>",
           "",
           `Today's date: ${localDate(timestamp)}`,
+          "",
+          "When the current tools cannot observe or complete the requested outcome, search the installed capability packs and autonomously enable the smallest sufficient set. Disable temporary packs when they are no longer useful.",
           "",
           `Instructions from: ${instructionFile}\nBe precise.`,
         ].join("\n"),

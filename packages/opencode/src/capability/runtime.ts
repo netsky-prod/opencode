@@ -115,6 +115,8 @@ export const node = makeLocationNode({
   deps: [MCP.node],
 })
 
+export const adapterNode = node
+
 function mcpConfig(definition: CapabilityManifest.Runtime): ConfigMCPV1.Info {
   const [command, ...args] = definition.command
   if (!command) throw new Error(`Capability runtime command is empty: ${definition.id}`)

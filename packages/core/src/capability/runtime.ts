@@ -22,7 +22,7 @@ export type Status = {
 export interface Tool {
   readonly name: string
   readonly description: string
-  readonly inputSchema: unknown
+  readonly inputSchema: Readonly<object>
   readonly call: (input: unknown) => Effect.Effect<unknown, unknown>
 }
 

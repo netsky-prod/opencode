@@ -147,6 +147,43 @@ export function make<
   return tool
 }
 
+export function makeDynamic(config: {
+  readonly description: string
+  readonly inputSchema: Readonly<object>
+  readonly outputSchema?: JsonSchema.JsonSchema
+  readonly execute: (input: unknown, context: Context) => Effect.Effect<unknown, ToolFailure>
+  readonly toStructuredOutput?: (output: unknown) => unknown
+  readonly toModelOutput?: (output: unknown) => ReadonlyArray<Content>
+}) {
+  const tool = make({
+    description: config.description,
+    input: Schema.Unknown,
+    output: Schema.Unknown,
+    structured: Schema.Unknown,
+    toStructuredOutput: config.toStructuredOutput ? ({ output }) => config.toStructuredOutput!(output) : undefined,
+    toModelOutput: config.toModelOutput ? ({ output }) => config.toModelOutput!(output) : undefined,
+    execute: config.execute,
+  })
+  const runtime = runtimeOf(tool)
+  const definitions = new Map<string, ToolDefinition>()
+  runtimes.set(tool, {
+    ...runtime,
+    definition: (name) => {
+      const cached = definitions.get(name)
+      if (cached) return cached
+      const value = new ToolDefinition({
+        name,
+        description: config.description,
+        inputSchema: Object.fromEntries(Object.entries(config.inputSchema)),
+        outputSchema: config.outputSchema,
+      })
+      definitions.set(name, value)
+      return value
+    },
+  })
+  return tool
+}
+
 export const validateName = (name: string) =>
   /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(name)
     ? Effect.void

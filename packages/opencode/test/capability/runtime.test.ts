@@ -1,10 +1,12 @@
 import path from "node:path"
-import { expect } from "bun:test"
+import { expect, test } from "bun:test"
 import { Server } from "@modelcontextprotocol/sdk/server/index.js"
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js"
 import { CallToolRequestSchema, ListToolsRequestSchema, type Tool } from "@modelcontextprotocol/sdk/types.js"
 import { CapabilityManifest } from "@opencode-ai/core/capability/manifest"
 import { CapabilityRuntime as CoreCapabilityRuntime } from "@opencode-ai/core/capability/runtime"
+import { Node } from "@opencode-ai/core/effect/app-node"
+import { CapabilityTool } from "@opencode-ai/core/tool/capability"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Effect, Exit } from "effect"
 import { CapabilityRuntime } from "../../src/capability/runtime"
@@ -13,6 +15,13 @@ import { testEffect } from "../lib/effect"
 
 const stdioFixture = path.join(import.meta.dir, "../fixture/mcp-lifecycle-stdio.ts")
 const it = testEffect(LayerNode.compile(LayerNode.group([MCP.node, CapabilityRuntime.node])))
+
+test("the OpenCode adapter satisfies Core capability-tool composition", () => {
+  const composed = LayerNode.hoist(CapabilityTool.node, Node.tags.values.global, [
+    [CoreCapabilityRuntime.node, CapabilityRuntime.node],
+  ])
+  expect(LayerNode.hasUnbound(composed.node, CoreCapabilityRuntime.node)).toBe(false)
+})
 
 const definition = (url: string, input: Partial<CapabilityManifest.Runtime> = {}) =>
   CapabilityManifest.Runtime.make({

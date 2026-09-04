@@ -1,11 +1,12 @@
 import fs from "fs/promises"
 import path from "path"
 import { describe, expect } from "bun:test"
-import { DateTime, Effect, Equal, Hash, Schema } from "effect"
+import { DateTime, Effect, Equal, Hash, Layer, Schema } from "effect"
 import { Tool } from "@opencode-ai/core/tool/tool"
 import { define } from "@opencode-ai/plugin/v2/effect"
 import { AgentV2 } from "@opencode-ai/core/agent"
 import { Catalog } from "@opencode-ai/core/catalog"
+import { CapabilityRuntime } from "@opencode-ai/core/capability/runtime"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { LocationServiceMap } from "@opencode-ai/core/location-services"
@@ -33,7 +34,9 @@ import { ToolRegistry } from "../src/tool/registry"
 import { ApplicationTools } from "../src/tool/application-tools"
 
 const it = testEffect(
-  AppNodeBuilder.build(LayerNode.group([ApplicationTools.node, Database.node, EventV2.node, LocationServiceMap.node])),
+  AppNodeBuilder.build(LayerNode.group([ApplicationTools.node, Database.node, EventV2.node, LocationServiceMap.node]), [
+    [CapabilityRuntime.node, Layer.mock(CapabilityRuntime.Service, {})],
+  ]),
 )
 
 describe("LocationServiceMap", () => {
@@ -107,6 +110,10 @@ describe("LocationServiceMap", () => {
             "application_context",
             "apply_patch",
             "bash",
+            "capability_disable",
+            "capability_enable",
+            "capability_search",
+            "capability_status",
             "edit",
             "glob",
             "grep",
@@ -129,6 +136,10 @@ describe("LocationServiceMap", () => {
             "application_context",
             "apply_patch",
             "bash",
+            "capability_disable",
+            "capability_enable",
+            "capability_search",
+            "capability_status",
             "edit",
             "glob",
             "grep",
