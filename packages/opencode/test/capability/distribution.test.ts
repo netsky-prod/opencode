@@ -30,12 +30,14 @@ test("native payload retains every manifest and skill without the source checkou
       expect(exit, stderr).toBe(0)
       return z
         .array(
-          z.object({
-            id: z.string(),
-            source: z.literal("builtin"),
-            profiles: z.record(z.string(), z.unknown()),
-            skills: z.array(z.object({ name: z.string(), content: z.string().min(100) })),
-          }),
+          z
+            .object({
+              id: z.string(),
+              source: z.literal("builtin"),
+              profiles: z.record(z.string(), z.unknown()),
+              skills: z.array(z.object({ name: z.string(), content: z.string().min(100) }).passthrough()),
+            })
+            .passthrough(),
         )
         .parse(JSON.parse(stdout))
     }

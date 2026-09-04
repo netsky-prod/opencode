@@ -1,2 +1,4 @@
 packages/core/migration/**/snapshot.json linguist-generated
 packages/core/src/database/migration.gen.ts linguist-generated
+# Unified diff context lines intentionally prefix upstream tabs with a space.
+patches/@hey-api%2Fopenapi-ts@0.90.10.patch whitespace=-space-before-tab

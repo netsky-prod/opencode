@@ -76,6 +76,21 @@ Environment substitution requires a whole value such as `${TEAM_RESEARCH_URL}`, 
 
 Profiles reference declared skill/runtime IDs and may narrow `platforms`. Optional `dependencies` contains `{ "id", "check": ["program", "--version"], "optional", "profiles" }`; omitting `profiles` applies the check to every profile. Keep checks read-only and fast. Markdown paths must stay inside the pack directory, including after symlink resolution.
 
+The supported platform literals are `darwin` and `linux`. Optional `permissions` metadata has this shape:
+
+```json
+{
+  "permissions": {
+    "hints": [{ "action": "bash", "resource": "docker compose *" }],
+    "servers": {
+      "index": { "type": "remote", "url": "https://example.org/mcp" }
+    }
+  }
+}
+```
+
+`hints` contains action/resource descriptions, not grants or enforced rules. `servers` maps IDs to Core MCP configuration objects: local `{ type: "local", command: [...] }` or remote `{ type: "remote", url: "..." }`, with the optional fields defined in `packages/core/src/config/mcp.ts`. In the current implementation this server metadata participates in discovery; it does not launch servers or replace `runtimes`. Keep credentials out of this metadata. Actual authorization comes from the session's existing OpenCode permission policy.
+
 ## Migrate existing research MCP configuration
 
 Existing global MCP connections remain supported. Migration is opt-in:
