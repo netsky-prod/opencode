@@ -3,6 +3,7 @@ export * as CapabilityTool from "./capability"
 import { ToolFailure } from "@opencode-ai/llm"
 import { Clock, Effect, Exit, Layer, Result, Schema, Scope } from "effect"
 import { ChildProcess } from "effect/unstable/process"
+import { AgentV2 } from "../agent"
 import { CapabilityCatalog } from "../capability/catalog"
 import { CapabilityManifest } from "../capability/manifest"
 import { CapabilityRuntime } from "../capability/runtime"
@@ -12,12 +13,16 @@ import { KeyedMutex } from "../effect/keyed-mutex"
 import { AppProcess } from "../process"
 import { PermissionV2 } from "../permission"
 import { SessionSchema } from "../session/schema"
+import { SessionStore } from "../session/store"
+import { Hash } from "../util/hash"
 import { ToolRegistry } from "./registry"
 import { Tool } from "./tool"
 import { Tools } from "./tools"
 
 const MAX_SEARCH_RESULTS = 10
 const PROBE_TIMEOUT = "15 seconds"
+const MAX_PERMISSION_RESOURCES = 32
+const MAX_PERMISSION_RESOURCE_LENGTH = 2_000
 
 const ShortText = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(500))
 const Profiles = Schema.Array(CapabilityManifest.ID).check(Schema.isMinLength(1), Schema.isMaxLength(16))
@@ -50,6 +55,9 @@ const EnableOutput = Schema.Struct({
   nextTurn: Schema.Boolean,
   tools: Schema.Array(Schema.String).check(Schema.isMaxLength(256)),
   skills: Schema.Array(CapabilityManifest.ID).check(Schema.isMaxLength(128)),
+  availableTools: Schema.Array(Schema.String).check(Schema.isMaxLength(256)),
+  availableSkills: Schema.Array(CapabilityManifest.ID).check(Schema.isMaxLength(128)),
+  permissionFiltered: Schema.Boolean,
   dependencies: Schema.Array(DependencyHealth).check(Schema.isMaxLength(32)),
   remediation: Schema.Array(Schema.String.check(Schema.isMaxLength(500))).check(Schema.isMaxLength(32)),
 })
@@ -68,6 +76,7 @@ type ProfileID = CapabilityManifest.ID
 
 type Held = {
   readonly pack: CapabilityCatalog.Pack
+  readonly fingerprint: string
   readonly profiles: ReadonlyArray<ProfileID>
   readonly references: ReadonlyArray<CapabilityRuntime.Reference>
   readonly registrations: ReadonlyArray<string>
@@ -85,6 +94,8 @@ const layer = Layer.effectDiscard(
     const runtime = yield* CapabilityRuntime.Service
     const process = yield* AppProcess.Service
     const permission = yield* PermissionV2.Service
+    const agents = yield* AgentV2.Service
+    const sessions = yield* SessionStore.Service
     const tools = yield* Tools.Service
     const hooks = yield* ToolRegistry.MaterializationHooks
     const locks = KeyedMutex.makeUnsafe<string>()
@@ -146,15 +157,22 @@ const layer = Layer.effectDiscard(
     const releaseRegistrations = (keys: ReadonlyArray<string>) =>
       registrationLock.withLock("registrations")(releaseRegistrationsLocked(keys))
 
+    const releaseReferences = (references: ReadonlyArray<CapabilityRuntime.Reference>) =>
+      Effect.forEach(references.toReversed(), (reference) => runtime.release(reference), {
+        concurrency: "unbounded",
+        discard: true,
+      })
+
     const release = (value: Held) =>
-      releaseRegistrations(value.registrations).pipe(
-        Effect.andThen(
-          Effect.forEach(value.references.toReversed(), (reference) => runtime.release(reference), {
-            concurrency: "unbounded",
-            discard: true,
-          }),
-        ),
-      )
+      releaseRegistrations(value.registrations).pipe(Effect.ensuring(releaseReferences(value.references)))
+
+    const dropHeld = (key: string, expected: Held) =>
+      Effect.gen(function* () {
+        if (held.get(key) !== expected) return false
+        held.delete(key)
+        yield* release(expected)
+        return true
+      })
 
     const register = (
       pack: CapabilityCatalog.Pack,
@@ -163,6 +181,7 @@ const layer = Layer.effectDiscard(
     ) =>
       registrationLock.withLock("registrations")(
         Effect.gen(function* () {
+          const fingerprint = manifestFingerprint(pack)
           const added: string[] = []
           const rollback = Effect.suspend(() => releaseRegistrationsLocked(added))
           return yield* Effect.gen(function* () {
@@ -170,7 +189,7 @@ const layer = Layer.effectDiscard(
               const profile = pack.profiles[profileID]
               if (!profile) continue
               for (const runtimeID of profile.runtimes) {
-                const key = registrationKey(pack.id, profileID, runtimeID)
+                const key = registrationKey(pack.id, profileID, runtimeID, fingerprint)
                 const existing = shared.get(key)
                 if (existing) {
                   existing.count++
@@ -194,11 +213,12 @@ const layer = Layer.effectDiscard(
                               new ToolFailure({ message: `Capability runtime unavailable: ${pack.id}/${runtimeID}` }),
                             )
                           }
+                          const canonical = canonicalResource(runtimeID, definition.name)
                           return permission
                             .assert({
                               action: definition.name,
-                              resources: ["*"],
-                              save: ["*"],
+                              resources: permissionResources(canonical, input),
+                              save: [canonical],
                               sessionID: context.sessionID,
                               agent: context.agent,
                               source: {
@@ -244,119 +264,182 @@ const layer = Layer.effectDiscard(
         }),
       )
 
-    const activate = (
+    const activateLocked = (
       sessionID: SessionSchema.ID,
       pack: CapabilityCatalog.Pack,
       profiles: ReadonlyArray<ProfileID>,
       dependencies: ReadonlyArray<DependencyHealth>,
       persist: boolean,
+      agentID?: AgentV2.ID,
     ): Effect.Effect<EnableOutput, ToolFailure> =>
-      locks.withLock(activationKey(sessionID, pack.id))(
-        Effect.gen(function* () {
-          const previous = held.get(activationKey(sessionID, pack.id))
-          if (!compatible(pack)) {
-            const output = failedOutput(pack, profiles, dependencies, "unsupported")
-            failures.set(activationKey(sessionID, pack.id), {
-              checkedAt: yield* Clock.currentTimeMillis,
-              remediation: output.remediation,
-            })
-            return output
-          }
-          const missing = dependencies.filter((dependency) => dependency.state === "missing")
-          if (missing.length > 0) {
-            const output = failedOutput(pack, profiles, dependencies, "failed")
-            failures.set(activationKey(sessionID, pack.id), {
-              checkedAt: Math.max(...missing.map((dependency) => dependency.checkedAt)),
-              remediation: output.remediation,
-            })
-            return output
-          }
-          const definitions = selectedRuntimes(pack, profiles)
-          const result = yield* runtime.activate(
-            definitions.map((definition) => ({ key: runtimeKey(pack.id, definition.id), definition })),
-          )
-          if (result.state === "failed") {
-            const output = failedOutput(pack, profiles, dependencies, "failed")
-            failures.set(activationKey(sessionID, pack.id), {
-              checkedAt: yield* Clock.currentTimeMillis,
-              remediation: output.remediation,
-            })
-            return output
-          }
+      Effect.gen(function* () {
+        const key = activationKey(sessionID, pack.id)
+        let previous = held.get(key)
+        const fingerprint = manifestFingerprint(pack)
+        if (previous && previous.fingerprint !== fingerprint) {
+          yield* dropHeld(key, previous)
+          previous = undefined
+        }
+        if (!compatible(pack)) {
+          const output = failedOutput(pack, profiles, dependencies, "unsupported")
+          failures.set(key, {
+            checkedAt: yield* Clock.currentTimeMillis,
+            remediation: output.remediation,
+          })
+          return output
+        }
+        const missing = dependencies.filter((dependency) => dependency.state === "missing")
+        if (missing.length > 0) {
+          const output = failedOutput(pack, profiles, dependencies, "failed")
+          failures.set(key, {
+            checkedAt: Math.max(...missing.map((dependency) => dependency.checkedAt)),
+            remediation: output.remediation,
+          })
+          return output
+        }
+        const definitions = selectedRuntimes(pack, profiles)
+        const result = yield* runtime.activate(
+          definitions.map((definition) => ({ key: runtimeKey(pack.id, definition.id), definition })),
+        )
+        if (result.state === "failed") {
+          const output = failedOutput(pack, profiles, dependencies, "failed")
+          failures.set(key, {
+            checkedAt: yield* Clock.currentTimeMillis,
+            remediation: output.remediation,
+          })
+          return output
+        }
 
-          const registrations = yield* register(pack, profiles, result.references).pipe(
-            Effect.mapError(() => new ToolFailure({ message: `Capability tools could not be registered: ${pack.id}` })),
-          )
-          const next: Held = { pack, profiles, references: result.references, registrations }
-          const activationState =
-            result.state === "degraded" || dependencies.some((dependency) => dependency.state === "optional-missing")
-              ? ("degraded" as const)
-              : ("active" as const)
-          yield* Effect.gen(function* () {
-            if (persist) {
-              yield* state
-                .enable({ sessionID, id: pack.id, profiles, state: activationState })
-                .pipe(Effect.mapError((error) => new ToolFailure({ message: error.message })))
-            }
-            held.set(activationKey(sessionID, pack.id), next)
-            failures.delete(activationKey(sessionID, pack.id))
-            if (previous) yield* release(previous)
-          }).pipe(
-            Effect.onExit((exit) => (Exit.isFailure(exit) ? release(next) : Effect.void)),
-            Effect.uninterruptible,
-          )
-
-          return {
-            id: pack.id,
-            profiles,
-            state: activationState,
-            nextTurn: true,
-            tools: result.references
-              .flatMap((reference) => reference.value?.tools.map((tool) => tool.name) ?? [])
-              .toSorted(),
-            skills: selectedSkills(pack, profiles),
-            dependencies,
-            remediation: dependencies.flatMap((dependency) => dependency.remediation ?? []),
+        const registrations = yield* register(pack, profiles, result.references).pipe(
+          Effect.mapError(() => new ToolFailure({ message: `Capability tools could not be registered: ${pack.id}` })),
+          Effect.onError(() => releaseReferences(result.references)),
+          Effect.uninterruptible,
+        )
+        const next: Held = { pack, fingerprint, profiles, references: result.references, registrations }
+        const activationState =
+          result.state === "degraded" || dependencies.some((dependency) => dependency.state === "optional-missing")
+            ? ("degraded" as const)
+            : ("active" as const)
+        yield* Effect.gen(function* () {
+          if (persist) {
+            yield* state
+              .enable({ sessionID, id: pack.id, profiles, state: activationState })
+              .pipe(Effect.mapError((error) => new ToolFailure({ message: error.message })))
           }
-        }),
-      )
+          held.set(key, next)
+          failures.delete(key)
+          if (previous) yield* release(previous)
+        }).pipe(
+          Effect.onExit((exit) => (Exit.isFailure(exit) ? release(next) : Effect.void)),
+          Effect.uninterruptible,
+        )
+
+        const rules = (yield* agents.resolve(agentID))?.permissions ?? []
+        const availableTools = definitions
+          .flatMap((definition) => {
+            const reference = result.references.find((item) => item.key === runtimeKey(pack.id, definition.id))
+            return (
+              reference?.value?.tools.filter(
+                (tool) =>
+                  PermissionV2.evaluate(tool.name, canonicalResource(definition.id, tool.name), rules).effect !==
+                  "deny",
+              ) ?? []
+            ).map((tool) => tool.name)
+          })
+          .filter(distinct)
+          .toSorted()
+        const availableSkills = selectedSkills(pack, profiles).filter(
+          (skill) => PermissionV2.evaluate("skill", skill, rules).effect !== "deny",
+        )
+        return {
+          id: pack.id,
+          profiles,
+          state: activationState,
+          nextTurn: true,
+          tools: availableTools,
+          skills: availableSkills,
+          availableTools,
+          availableSkills,
+          permissionFiltered: true,
+          dependencies,
+          remediation: dependencies.flatMap((dependency) => dependency.remediation ?? []),
+        }
+      })
 
     const ensure = (sessionID: SessionSchema.ID) =>
       Effect.gen(function* () {
+        const heldSessions = new Set([...held.keys()].map(sessionFromActivationKey))
+        yield* Effect.forEach(
+          heldSessions,
+          (heldSessionID) =>
+            Effect.gen(function* () {
+              if (yield* sessions.get(heldSessionID)) return
+              const entries = [...held.entries()].filter(([key]) => key.startsWith(`${heldSessionID}\u0000`))
+              yield* Effect.forEach(
+                entries,
+                ([key, expected]) =>
+                  locks.withLock(key)(
+                    Effect.gen(function* () {
+                      if (yield* sessions.get(heldSessionID)) return
+                      yield* dropHeld(key, expected)
+                    }),
+                  ),
+                { discard: true },
+              )
+            }),
+          { concurrency: "unbounded", discard: true },
+        )
         const activations = yield* state.list(sessionID)
         const active = new Set(activations.map((item) => activationKey(sessionID, item.id)))
         const stale = [...held.entries()].filter(([key]) => key.startsWith(`${sessionID}\u0000`) && !active.has(key))
         yield* Effect.forEach(
           stale,
-          ([key, value]) =>
-            release(value).pipe(Effect.andThen(Effect.sync(() => held.delete(key))), Effect.uninterruptible),
+          ([key, expected]) =>
+            locks.withLock(key)(
+              Effect.gen(function* () {
+                const current = (yield* state.list(sessionID)).find(
+                  (activation) => activationKey(sessionID, activation.id) === key,
+                )
+                if (!current) yield* dropHeld(key, expected)
+              }),
+            ),
           { discard: true },
         )
         const outcomes = yield* Effect.forEach(
           activations,
           (item) =>
-            Effect.gen(function* () {
-              const key = activationKey(sessionID, item.id)
-              const current = held.get(key)
-              if (current && sameProfiles(current.profiles, item.profiles)) {
-                const unavailableRequired = selectedRuntimes(current.pack, current.profiles)
-                  .filter((definition) => !definition.optional)
-                  .some(
-                    (definition) =>
-                      !current.references.find(
-                        (reference) => reference.key === runtimeKey(current.pack.id, definition.id),
-                      )?.available,
-                  )
-                if (!unavailableRequired) return undefined
-              }
-              const pack = yield* catalog.get(item.id)
-              if (!pack) return item.id
-              const profiles = validProfiles(pack, item.profiles)
-              if (!profiles) return item.id
-              const dependencies = compatible(pack) ? yield* probe(pack) : []
-              const output = yield* activate(sessionID, pack, profiles, dependencies, false).pipe(Effect.result)
-              return Result.isSuccess(output) && output.success.nextTurn ? undefined : item.id
-            }),
+            locks.withLock(activationKey(sessionID, item.id))(
+              Effect.gen(function* () {
+                const key = activationKey(sessionID, item.id)
+                const activation = (yield* state.list(sessionID)).find((current) => current.id === item.id)
+                const current = held.get(key)
+                if (!activation) {
+                  if (current) yield* dropHeld(key, current)
+                  return item.id
+                }
+                const pack = yield* catalog.get(item.id)
+                const profiles = pack ? validProfiles(pack, activation.profiles) : undefined
+                if (!pack || !profiles) {
+                  if (current) yield* dropHeld(key, current)
+                  return item.id
+                }
+                const fingerprint = manifestFingerprint(pack)
+                if (current && current.fingerprint === fingerprint && sameProfiles(current.profiles, profiles)) {
+                  const unavailableRequired = selectedRuntimes(pack, profiles)
+                    .filter((definition) => !definition.optional)
+                    .some(
+                      (definition) =>
+                        !current.references.find((reference) => reference.key === runtimeKey(pack.id, definition.id))
+                          ?.available,
+                    )
+                  if (!unavailableRequired) return undefined
+                }
+                if (current) yield* dropHeld(key, current)
+                const dependencies = compatible(pack) ? yield* probe(pack) : []
+                const output = yield* activateLocked(sessionID, pack, profiles, dependencies, false).pipe(Effect.result)
+                return Result.isSuccess(output) && output.success.nextTurn ? undefined : item.id
+              }),
+            ),
           { concurrency: "unbounded" },
         )
         return new Set(outcomes.filter((id): id is string => id !== undefined))
@@ -405,17 +488,30 @@ const layer = Layer.effectDiscard(
           }),
           output: EnableOutput,
           execute: (input, context) =>
-            Effect.gen(function* () {
-              const pack = yield* catalog.get(input.id)
-              if (!pack) return yield* new ToolFailure({ message: `Capability manifest not found: ${input.id}` })
-              const profiles = validProfiles(pack, input.profiles ?? [CapabilityManifest.ID.make("default")])
-              if (!profiles) {
-                const missing = input.profiles?.find((profile) => !Object.hasOwn(pack.profiles, profile)) ?? "default"
-                return yield* new ToolFailure({ message: `Capability profile not found: ${input.id}/${missing}` })
-              }
-              const dependencies = compatible(pack) ? yield* probe(pack) : []
-              return yield* activate(context.sessionID, pack, profiles, dependencies, true)
-            }),
+            locks.withLock(activationKey(context.sessionID, input.id))(
+              Effect.gen(function* () {
+                const pack = yield* catalog.get(input.id)
+                if (!pack) return yield* new ToolFailure({ message: `Capability manifest not found: ${input.id}` })
+                const key = activationKey(context.sessionID, input.id)
+                const durable = (yield* state.list(context.sessionID)).find((activation) => activation.id === input.id)
+                const current = held.get(key)
+                if (
+                  current &&
+                  (!durable ||
+                    current.fingerprint !== manifestFingerprint(pack) ||
+                    !sameProfiles(current.profiles, durable.profiles))
+                ) {
+                  yield* dropHeld(key, current)
+                }
+                const profiles = validProfiles(pack, input.profiles ?? [CapabilityManifest.ID.make("default")])
+                if (!profiles) {
+                  const missing = input.profiles?.find((profile) => !Object.hasOwn(pack.profiles, profile)) ?? "default"
+                  return yield* new ToolFailure({ message: `Capability profile not found: ${input.id}/${missing}` })
+                }
+                const dependencies = compatible(pack) ? yield* probe(pack) : []
+                return yield* activateLocked(context.sessionID, pack, profiles, dependencies, true, context.agent)
+              }),
+            ),
         }),
         capability_disable: Tool.make({
           description: "Disable one capability pack for this session and release its runtime references.",
@@ -432,9 +528,8 @@ const layer = Layer.effectDiscard(
                   yield* state.disable({ sessionID: context.sessionID, id: input.id })
                   const key = activationKey(context.sessionID, input.id)
                   const current = held.get(key)
-                  held.delete(key)
                   failures.delete(key)
-                  if (current) yield* release(current)
+                  if (current) yield* dropHeld(key, current)
                   return { id: input.id, state: "disabled" as const, nextTurn: true }
                 }),
               ),
@@ -454,9 +549,9 @@ const layer = Layer.effectDiscard(
                 Effect.gen(function* () {
                   const activation = active.get(pack.id)
                   const dependencies = yield* probe(pack)
-                  const runtimeStatuses = yield* Effect.forEach(
-                    selectedRuntimes(pack, activation ? (validProfiles(pack, activation.profiles) ?? []) : []),
-                    (definition) => runtime.status(runtimeKey(pack.id, definition.id)),
+                  const profiles = activation ? validProfiles(pack, activation.profiles) : undefined
+                  const runtimeStatuses = yield* Effect.forEach(selectedRuntimes(pack, profiles ?? []), (definition) =>
+                    runtime.status(runtimeKey(pack.id, definition.id)),
                   )
                   const remembered = failures.get(activationKey(context.sessionID, pack.id))
                   const checkedAt = Math.max(
@@ -465,22 +560,29 @@ const layer = Layer.effectDiscard(
                     ...runtimeStatuses.map((item) => item.updatedAt),
                   )
                   const missing = dependencies.filter((dependency) => dependency.state !== "available")
-                  const failed = runtimeStatuses.some((item) => item.state === "failed") || remembered !== undefined
+                  const missingRequired = missing.some((item) => item.state === "missing")
+                  const invalidProfiles = activation !== undefined && profiles === undefined
+                  const failed =
+                    missingRequired ||
+                    runtimeStatuses.some((item) => item.state === "failed") ||
+                    remembered !== undefined
                   const degraded =
                     activation?.state === "degraded" ||
                     runtimeStatuses.some((item) => item.state === "degraded") ||
                     missing.some((item) => item.state === "optional-missing")
                   const currentState = !compatible(pack)
                     ? ("unsupported" as const)
-                    : activation
-                      ? failed
-                        ? ("failed" as const)
-                        : degraded
-                          ? ("degraded" as const)
-                          : ("active" as const)
-                      : failed
-                        ? ("failed" as const)
-                        : ("installed" as const)
+                    : invalidProfiles
+                      ? ("unavailable" as const)
+                      : activation
+                        ? failed
+                          ? ("failed" as const)
+                          : degraded
+                            ? ("degraded" as const)
+                            : ("active" as const)
+                        : failed
+                          ? ("failed" as const)
+                          : ("installed" as const)
                   const remediation = [
                     ...(remembered?.remediation ?? []),
                     ...missing.flatMap((dependency) => dependency.remediation ?? []),
@@ -488,6 +590,9 @@ const layer = Layer.effectDiscard(
                       ? [
                           `Retry capability_enable for ${pack.id}; if it still fails, verify the runtime command and credentials.`,
                         ]
+                      : []),
+                    ...(invalidProfiles
+                      ? [`Select profiles currently declared by ${pack.id}, or disable the stale activation.`]
                       : []),
                     ...(!compatible(pack)
                       ? [`Use ${pack.id} on one of its supported platforms: ${pack.platforms.join(", ")}.`]
@@ -538,6 +643,8 @@ export const node = makeLocationNode({
     CapabilityRuntime.node,
     AppProcess.node,
     PermissionV2.node,
+    AgentV2.node,
+    SessionStore.node,
   ],
 })
 
@@ -549,8 +656,64 @@ function runtimeKey(pack: string, runtime: string) {
   return `${pack}/${runtime}`
 }
 
-function registrationKey(pack: string, profile: string, runtime: string) {
-  return `${pack}\u0000${profile}\u0000${runtime}`
+function registrationKey(pack: string, profile: string, runtime: string, fingerprint: string) {
+  return `${pack}\u0000${profile}\u0000${runtime}\u0000${fingerprint}`
+}
+
+function sessionFromActivationKey(key: string) {
+  return SessionSchema.ID.make(key.slice(0, key.indexOf("\u0000")))
+}
+
+function manifestFingerprint(pack: CapabilityCatalog.Pack) {
+  return Hash.sha256(
+    JSON.stringify({
+      id: pack.id,
+      version: pack.version,
+      platforms: pack.platforms,
+      profiles: pack.profiles,
+      runtimes: pack.runtimes,
+      dependencies: pack.dependencies,
+      skills: pack.skills.map((skill) => ({
+        name: skill.name,
+        description: skill.description,
+        path: skill.path,
+        content: skill.content,
+      })),
+    }),
+  )
+}
+
+function canonicalResource(serverID: string, tool: string) {
+  return `mcp:${serverID}:${tool}`
+}
+
+function permissionResources(canonical: string, input: unknown) {
+  const resources = new Set<string>([canonical])
+  const pending: unknown[] = [input]
+  const seen = new WeakSet<object>()
+  let visited = 0
+  while (pending.length > 0 && resources.size < MAX_PERMISSION_RESOURCES && visited < 256) {
+    const value = pending.pop()
+    visited++
+    if (typeof value === "string") {
+      if (value.length > 0 && value !== "*" && value.length <= MAX_PERMISSION_RESOURCE_LENGTH) resources.add(value)
+      continue
+    }
+    if (Array.isArray(value)) {
+      if (seen.has(value)) continue
+      seen.add(value)
+      pending.push(...value.toReversed())
+      continue
+    }
+    if (!value || typeof value !== "object" || seen.has(value)) continue
+    seen.add(value)
+    pending.push(...Object.values(value).toReversed())
+  }
+  return [...resources].slice(0, MAX_PERMISSION_RESOURCES)
+}
+
+function distinct<T>(value: T, index: number, values: ReadonlyArray<T>) {
+  return values.indexOf(value) === index
 }
 
 function compatible(pack: CapabilityCatalog.Pack) {
@@ -600,6 +763,9 @@ function failedOutput(
     nextTurn: false,
     tools: [],
     skills: [],
+    availableTools: [],
+    availableSkills: [],
+    permissionFiltered: true,
     dependencies,
     remediation:
       state === "unsupported"

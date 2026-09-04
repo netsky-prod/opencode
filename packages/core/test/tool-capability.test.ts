@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { Effect, Layer } from "effect"
+import { Deferred, Effect, Fiber, Layer } from "effect"
 import type { ChildProcess } from "effect/unstable/process"
 import { AgentV2 } from "@opencode-ai/core/agent"
 import { CapabilityCatalog } from "@opencode-ai/core/capability/catalog"
@@ -13,6 +13,7 @@ import { PermissionV2 } from "@opencode-ai/core/permission"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { SessionV2 } from "@opencode-ai/core/session"
 import { SessionMessage } from "@opencode-ai/core/session/message"
+import { SessionStore } from "@opencode-ai/core/session/store"
 import { ApplicationTools } from "@opencode-ai/core/tool/application-tools"
 import { CapabilityTool } from "@opencode-ai/core/tool/capability"
 import { ToolRegistry } from "@opencode-ai/core/tool/registry"
@@ -69,6 +70,7 @@ const pack = (index: number): CapabilityCatalog.Pack => ({
 })
 
 const packs = Array.from({ length: 12 }, (_, index) => pack(index))
+let catalogPacks = packs
 const activations = new Map<SessionV2.ID, CapabilityState.Activation[]>()
 const events: string[] = []
 let runtimeFailure = false
@@ -76,18 +78,43 @@ let runtimeState: CapabilityRuntime.Status["state"] = "healthy"
 let diagnostic = ""
 let runtimeCalls = 0
 let denyRuntime = false
+let deniedResource: string | undefined
 let probeExitCode = 0
+let runtimeReferences: ReadonlyArray<CapabilityRuntime.Reference>
+let agentPermissions: PermissionV2.Ruleset = []
+let permissionRequests: PermissionV2.AssertInput[] = []
+let deletedSessions = new Set<SessionV2.ID>()
+let pausedList:
+  | {
+      readonly sessionID: SessionV2.ID
+      readonly started: Deferred.Deferred<void>
+      readonly resume: Deferred.Deferred<void>
+    }
+  | undefined
 
 const catalog = CapabilityCatalog.Service.of({
-  list: () => Effect.succeed(packs),
-  get: (id) => Effect.succeed(packs.find((item) => item.id === id)),
+  list: () => Effect.succeed(catalogPacks),
+  get: (id) => Effect.succeed(catalogPacks.find((item) => item.id === id)),
   search: (_query, active) =>
-    Effect.succeed([...packs.filter((item) => !active.has(item.id)), ...packs.filter((item) => active.has(item.id))]),
+    Effect.succeed([
+      ...catalogPacks.filter((item) => !active.has(item.id)),
+      ...catalogPacks.filter((item) => active.has(item.id)),
+    ]),
   register: () => Effect.void,
 })
 
 const state = CapabilityState.Service.of({
-  list: (id) => Effect.succeed(activations.get(id) ?? []),
+  list: (id) =>
+    Effect.gen(function* () {
+      const snapshot = activations.get(id) ?? []
+      const pause = pausedList
+      if (pause?.sessionID === id) {
+        pausedList = undefined
+        yield* Deferred.succeed(pause.started, undefined)
+        yield* Deferred.await(pause.resume)
+      }
+      return snapshot
+    }),
   enable: (input) =>
     Effect.sync(() => {
       events.push("persist:enable")
@@ -138,7 +165,7 @@ const runtime = CapabilityRuntime.Service.of({
       events.push("runtime:activate")
       return runtimeFailure
         ? ({ state: "failed", references: [], diagnostic: "startup failed" } as const)
-        : ({ state: "active", references: [reference] } as const)
+        : ({ state: "active", references: runtimeReferences } as const)
     }),
   status: () =>
     Effect.succeed({
@@ -168,9 +195,30 @@ const appProcess = Layer.succeed(
 )
 const permission = Layer.mock(PermissionV2.Service, {
   assert: (input) =>
-    Effect.sync(() => events.push(`permission:${input.action}`)).pipe(
-      Effect.andThen(denyRuntime ? Effect.fail(new PermissionV2.BlockedError({ rules: [] })) : Effect.void),
+    Effect.sync(() => {
+      permissionRequests.push(input)
+      events.push(`permission:${input.action}`)
+    }).pipe(
+      Effect.andThen(
+        denyRuntime || (deniedResource !== undefined && input.resources.includes(deniedResource))
+          ? Effect.fail(new PermissionV2.BlockedError({ rules: [] }))
+          : Effect.void,
+      ),
     ),
+})
+
+const agent = Layer.mock(AgentV2.Service, {
+  resolve: () =>
+    Effect.succeed(
+      AgentV2.Info.make({
+        ...AgentV2.Info.empty(identity.agent),
+        permissions: agentPermissions,
+      }),
+    ),
+})
+
+const sessions = Layer.mock(SessionStore.Service, {
+  get: (id) => Effect.succeed(deletedSessions.has(id) ? undefined : ({ id } as SessionV2.Info)),
 })
 
 const layer = AppNodeBuilder.build(
@@ -181,12 +229,15 @@ const layer = AppNodeBuilder.build(
     [CapabilityRuntime.node, Layer.succeed(CapabilityRuntime.Service, runtime)],
     [AppProcess.node, appProcess],
     [PermissionV2.node, permission],
+    [AgentV2.node, agent],
+    [SessionStore.node, sessions],
     [ToolOutputStore.node, ToolOutputStore.nodeWithoutConfig],
   ],
 )
 const it = testEffect(layer)
 
 const reset = () => {
+  catalogPacks = packs
   activations.clear()
   events.length = 0
   runtimeFailure = false
@@ -194,7 +245,13 @@ const reset = () => {
   diagnostic = ""
   runtimeCalls = 0
   denyRuntime = false
+  deniedResource = undefined
   probeExitCode = 0
+  runtimeReferences = [reference]
+  agentPermissions = []
+  permissionRequests = []
+  deletedSessions = new Set()
+  pausedList = undefined
 }
 
 const names = (materialized: ToolRegistry.Materialization) =>
@@ -261,6 +318,9 @@ describe("CapabilityTool", () => {
           nextTurn: true,
           tools: ["browser_playwright_navigate"],
           skills: ["browser-testing"],
+          availableTools: ["browser_playwright_navigate"],
+          availableSkills: ["browser-testing"],
+          permissionFiltered: true,
         },
       })
       expect(events.slice(0, 3)).toEqual(["probe", "runtime:activate", "persist:enable"])
@@ -283,6 +343,12 @@ describe("CapabilityTool", () => {
         }),
       ).toMatchObject({ result: { type: "json", value: { navigated: { url: "https://example.com" } } } })
       expect(events).toContain("permission:browser_playwright_navigate")
+      expect(permissionRequests.at(-1)).toMatchObject({
+        resources: ["mcp:playwright:browser_playwright_navigate", "https://example.com"],
+        save: ["mcp:playwright:browser_playwright_navigate"],
+      })
+      expect(permissionRequests.at(-1)?.resources).not.toContain("*")
+      expect(permissionRequests.at(-1)?.save).not.toContain("*")
       expect(runtimeCalls).toBe(1)
 
       denyRuntime = true
@@ -318,6 +384,55 @@ describe("CapabilityTool", () => {
     }),
   )
 
+  it.effect("releases acquired references and partial registrations when dynamic registration fails", () =>
+    Effect.gen(function* () {
+      reset()
+      const invalidRuntime = CapabilityManifest.Runtime.make({
+        id: CapabilityManifest.ID.make("invalid"),
+        type: "mcp",
+        command: ["invalid"],
+        tools: ["invalid tool"],
+        optional: false,
+      })
+      catalogPacks = [
+        {
+          ...pack(0),
+          runtimes: [...pack(0).runtimes, invalidRuntime],
+          profiles: {
+            [CapabilityManifest.ID.make("default")]: {
+              ...pack(0).profiles[CapabilityManifest.ID.make("default")]!,
+              runtimes: [CapabilityManifest.ID.make("playwright"), CapabilityManifest.ID.make("invalid")],
+            },
+          },
+        },
+      ]
+      const invalidReference = {
+        key: "browser/invalid",
+        available: true,
+        value: {
+          tools: [
+            {
+              name: "invalid tool",
+              description: "Cannot be registered",
+              inputSchema: { type: "object" },
+              call: () => Effect.void,
+            },
+          ],
+        },
+      } as unknown as CapabilityRuntime.Reference
+      runtimeReferences = [reference, invalidReference]
+      yieldRegistry = yield* ToolRegistry.Service
+
+      expect(yield* call("capability_enable", { id: "browser", profiles: ["default"] })).toMatchObject({
+        type: "error",
+        value: "Capability tools could not be registered: browser",
+      })
+      expect(events.filter((event) => event === "runtime:release")).toHaveLength(2)
+      expect(events).not.toContain("persist:enable")
+      expect(names(yield* yieldRegistry.materialize(sessionID))).not.toContain("browser_playwright_navigate")
+    }),
+  )
+
   it.effect("does not acquire or persist when a required dependency probe fails", () =>
     Effect.gen(function* () {
       reset()
@@ -346,6 +461,82 @@ describe("CapabilityTool", () => {
 
       expect(names(yield* yieldRegistry.materialize(sessionID))).toContain("browser_playwright_navigate")
       expect(events).toEqual(["probe", "runtime:activate"])
+    }),
+  )
+
+  it.effect("serializes prepare with disable and re-reads activation under the capability lock", () =>
+    Effect.gen(function* () {
+      reset()
+      yieldRegistry = yield* ToolRegistry.Service
+      const management = yield* yieldRegistry.materialize(sessionID)
+      activations.set(sessionID, [{ id: "browser", profiles: ["default"], state: "active" }])
+      const started = yield* Deferred.make<void>()
+      const resume = yield* Deferred.make<void>()
+      pausedList = { sessionID, started, resume }
+
+      const preparing = yield* yieldRegistry.materialize(sessionID).pipe(Effect.forkChild)
+      yield* Deferred.await(started)
+      expect(
+        yield* management.settle({
+          sessionID,
+          ...identity,
+          call: { type: "tool-call", id: "call-disable-race", name: "capability_disable", input: { id: "browser" } },
+        }),
+      ).toMatchObject({ result: { type: "json", value: { state: "disabled" } } })
+      yield* Deferred.succeed(resume, undefined)
+      expect(names(yield* Fiber.join(preparing))).not.toContain("browser_playwright_navigate")
+      expect(events).not.toContain("runtime:activate")
+    }),
+  )
+
+  it.effect("releases and withholds a held capability when its manifest is removed", () =>
+    Effect.gen(function* () {
+      reset()
+      yieldRegistry = yield* ToolRegistry.Service
+      yield* call("capability_enable", { id: "browser", profiles: ["default"] })
+      catalogPacks = catalogPacks.filter((item) => item.id !== "browser")
+      events.length = 0
+
+      expect(names(yield* yieldRegistry.materialize(sessionID))).not.toContain("browser_playwright_navigate")
+      expect(events).toContain("runtime:release")
+    }),
+  )
+
+  it.effect(
+    "releases and withholds a held capability when its manifest definition changes and reacquisition fails",
+    () =>
+      Effect.gen(function* () {
+        reset()
+        yieldRegistry = yield* ToolRegistry.Service
+        yield* call("capability_enable", { id: "browser", profiles: ["default"] })
+        catalogPacks = [
+          {
+            ...pack(0),
+            runtimes: pack(0).runtimes.map((definition) =>
+              CapabilityManifest.Runtime.make({ ...definition, command: ["changed-runtime"] }),
+            ),
+          },
+        ]
+        runtimeFailure = true
+        events.length = 0
+
+        expect(names(yield* yieldRegistry.materialize(sessionID))).not.toContain("browser_playwright_navigate")
+        expect(events).toContain("runtime:release")
+        expect(events).toContain("runtime:activate")
+      }),
+  )
+
+  it.effect("releases held references for cascade-deleted sessions on any later prepare", () =>
+    Effect.gen(function* () {
+      reset()
+      yieldRegistry = yield* ToolRegistry.Service
+      yield* call("capability_enable", { id: "browser", profiles: ["default"] })
+      activations.delete(sessionID)
+      deletedSessions.add(sessionID)
+      events.length = 0
+
+      yield* yieldRegistry.materialize(SessionV2.ID.make("ses_other"))
+      expect(events).toContain("runtime:release")
     }),
   )
 
@@ -388,6 +579,79 @@ describe("CapabilityTool", () => {
         },
       })
       expect(JSON.stringify(result)).not.toContain("secret-value")
+    }),
+  )
+
+  it.effect("reports missing required dependencies as failed and invalid persisted profiles as unavailable", () =>
+    Effect.gen(function* () {
+      reset()
+      yieldRegistry = yield* ToolRegistry.Service
+      activations.set(sessionID, [{ id: "browser", profiles: ["missing-profile"], state: "active" }])
+      probeExitCode = 1
+
+      expect(yield* call("capability_status", { id: "browser" })).toMatchObject({
+        type: "json",
+        value: {
+          capabilities: [expect.objectContaining({ id: "browser", state: "unavailable" })],
+        },
+      })
+
+      activations.set(sessionID, [{ id: "browser", profiles: ["default"], state: "active" }])
+      expect(yield* call("capability_status", { id: "browser" })).toMatchObject({
+        type: "json",
+        value: {
+          capabilities: [expect.objectContaining({ id: "browser", state: "failed" })],
+        },
+      })
+    }),
+  )
+
+  it.effect("filters next-turn capability lists with the invoking agent's permission rules", () =>
+    Effect.gen(function* () {
+      reset()
+      agentPermissions = [
+        { action: "browser_playwright_navigate", resource: "*", effect: "deny" },
+        { action: "skill", resource: "browser-testing", effect: "deny" },
+      ]
+      yieldRegistry = yield* ToolRegistry.Service
+
+      expect(yield* call("capability_enable", { id: "browser", profiles: ["default"] })).toMatchObject({
+        type: "json",
+        value: {
+          tools: [],
+          skills: [],
+          availableTools: [],
+          availableSkills: [],
+          permissionFiltered: true,
+        },
+      })
+    }),
+  )
+
+  it.effect("checks target-specific runtime input resources before execution", () =>
+    Effect.gen(function* () {
+      reset()
+      yieldRegistry = yield* ToolRegistry.Service
+      yield* call("capability_enable", { id: "browser", profiles: ["default"] })
+      deniedResource = "https://example.com/private"
+
+      expect(
+        yield* (yield* yieldRegistry.materialize(sessionID)).settle({
+          sessionID,
+          ...identity,
+          call: {
+            type: "tool-call",
+            id: "call-target-denied",
+            name: "browser_playwright_navigate",
+            input: { nested: { url: deniedResource }, path: "/tmp/file", duplicate: deniedResource },
+          },
+        }),
+      ).toMatchObject({ result: { type: "error", value: "Permission denied: browser_playwright_navigate" } })
+      expect(permissionRequests.at(-1)).toMatchObject({
+        resources: ["mcp:playwright:browser_playwright_navigate", deniedResource, "/tmp/file"],
+        save: ["mcp:playwright:browser_playwright_navigate"],
+      })
+      expect(runtimeCalls).toBe(0)
     }),
   )
 })

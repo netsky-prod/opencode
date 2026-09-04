@@ -56,3 +56,50 @@ tsgo --noEmit: exit 0
 
 - Runtime ownership is intentionally process-local. Persisted activation is authoritative across restarts, while handles are rebuilt lazily on the first subsequent materialization.
 - A failed lazy reconstruction hides the affected capability's runtime tools for that turn; status remains available so the model can surface remediation or retry enablement.
+
+## Review Fix Round 1
+
+### Findings Addressed
+
+1. Capability reconciliation now shares the per-Session/capability lock with enable and disable. Under that lock it re-reads durable activation and the current catalog pack, compares sorted profiles plus a manifest fingerprint covering profiles, runtimes, dependencies, platforms, and skills, and releases only the held identity it observed. Removed or changed manifests are withheld and their old registrations/references are released before reconstruction.
+2. Dynamic registration is an uninterruptible preparation boundary. Registration failure rolls back partial scoped registrations and releases every reference returned by runtime activation before returning an error; activation persistence remains last.
+3. Runtime tool authorization never uses wildcard resources. Every request contains `mcp:<serverID>:<tool>` followed by at most 31 distinct, bounded string leaves from the decoded input; saved approval is limited to the canonical MCP resource. Target-specific denial prevents the runtime call.
+4. OpenCode now owns one adapter-bound location-map composition in `src/location-services.ts`. Session system context, agents, debug commands, file/PTY handlers, the HTTP server, and relevant tests use it. Core no longer exports an unusable default map layer with an unbound capability runtime.
+5. Status classifies a missing required dependency as `failed`, an invalid persisted profile selection as `unavailable`, and optional failures only as degradation.
+6. Enable responses retain the backward-compatible `tools` and `skills` fields while adding explicit `availableTools`, `availableSkills`, and `permissionFiltered: true`. Both old and new lists are filtered through the invoking agent's effective deny rules, so denied names are not claimed as available.
+7. Every materialization preparation reconciles all held Session IDs against `SessionStore`. Cascade-deleted Sessions release matching held identities on the next prepare in that Location; the Location finalizer remains the terminal cleanup boundary.
+
+### Review RED Evidence
+
+- Registration failure left both newly acquired runtime references held.
+- A prepare racing with disable reacquired a now-disabled runtime from its stale activation snapshot.
+- Removed and replaced manifests continued advertising the old runtime tool and did not release its reference.
+- Preparing another Session after cascade deletion did not release the deleted Session's held reference.
+- Required dependency failure and invalid persisted profiles were reported as active.
+- Enable claimed tool/skill names denied by the invoking agent.
+- Runtime permission checks used wildcard resource/save values and did not observe a nested target-specific deny.
+- The shared OpenCode location composition module did not exist, while several callsites still imported Core's unbound default layer.
+
+### Review GREEN Evidence
+
+From `packages/core`:
+
+```text
+bun test test/tool-capability.test.ts test/system-context/builtins.test.ts test/location-layer.test.ts test/capability/materialization.test.ts test/application-tools.test.ts test/permission.test.ts && bun typecheck
+53 pass, 0 fail
+tsgo --noEmit: exit 0
+```
+
+From `packages/opencode`:
+
+```text
+bun test --timeout 10000 test/capability/runtime.test.ts test/server/httpapi-v2-location.test.ts test/session/prompt.test.ts test/session/system.test.ts test/agent/agent.test.ts test/server/httpapi-file.test.ts test/server/httpapi-pty.test.ts test/server/httpapi-v2-pty.test.ts && bun typecheck
+131 pass, 1 skip, 0 fail
+tsgo --noEmit: exit 0
+```
+
+Targeted lint completed with 0 errors. Its warnings were existing style findings in the touched legacy files plus test-only narrow fixture casts. `git diff --check` passed before commit.
+
+### Review-Fix Concerns
+
+- Deleted-Session cleanup is intentionally prepare-driven because Core has no Location-scoped Session deletion subscription. It is bounded by the held Session set and also runs under the existing Location finalizer.

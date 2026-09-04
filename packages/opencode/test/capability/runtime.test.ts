@@ -10,6 +10,7 @@ import { CapabilityTool } from "@opencode-ai/core/tool/capability"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Effect, Exit } from "effect"
 import { CapabilityRuntime } from "../../src/capability/runtime"
+import { locationServices } from "../../src/location-services"
 import { MCP } from "../../src/mcp"
 import { testEffect } from "../lib/effect"
 
@@ -21,6 +22,10 @@ test("the OpenCode adapter satisfies Core capability-tool composition", () => {
     [CoreCapabilityRuntime.node, CapabilityRuntime.node],
   ])
   expect(LayerNode.hasUnbound(composed.node, CoreCapabilityRuntime.node)).toBe(false)
+})
+
+test("the shared OpenCode location composition binds the Core capability runtime", () => {
+  expect(LayerNode.hasUnbound(locationServices.node, CoreCapabilityRuntime.node)).toBe(false)
 })
 
 const definition = (url: string, input: Partial<CapabilityManifest.Runtime> = {}) =>
