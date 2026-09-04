@@ -15,6 +15,7 @@ import {
   summarizeProviderSchemas,
   schemaBudget,
   validateRawOutput,
+  publicFailure,
   verifyCriterion,
   writeReports,
 } from "../../eval/capability/run"
@@ -108,6 +109,17 @@ describe("capability Qwen evaluation scorer", () => {
 })
 
 describe("capability Qwen evaluation runner", () => {
+  test("requires the entire raw directory to be ignored and hides opaque failures", async () => {
+    const directory = await fs.mkdtemp(path.join(import.meta.dir, "eval-raw-"))
+    temporary.push(directory)
+    await fs.mkdir(path.join(directory, "raw"))
+    await fs.writeFile(path.join(directory, ".gitignore"), "raw/trace.jsonl\n")
+    await assert.rejects(validateRawOutput(path.join(directory, "raw")), /ignored/)
+    await fs.writeFile(path.join(directory, ".gitignore"), "raw/\n")
+    await validateRawOutput(path.join(directory, "raw"))
+    expect(publicFailure(new Error("OPAQUE_PRIVATE_DIAGNOSTIC_742"))).not.toContain("OPAQUE_PRIVATE_DIAGNOSTIC_742")
+    expect(publicFailure(new Error("--case requires a value"))).toBe("--case requires a value")
+  })
   test("rejects missing case values and unsafe raw output locations", async () => {
     expect(() => parseArguments(["--case"])).toThrow("requires a value")
     expect(() => parseArguments(["--case", "--candidate"])).toThrow("requires a value")
@@ -274,6 +286,10 @@ describe("capability Qwen evaluation runner", () => {
       temporary.push(directory)
       const definition = suite.cases.find((item) => item.id === id)!
       await prepareFixture(definition, directory)
+      if (id === "mobile") {
+        const manifest = await Bun.file(path.join(directory, ".opencode/capabilities/mobile/capability.json")).json()
+        expect(Object.keys(manifest.profiles).sort()).toEqual(["all", "android", "ios"])
+      }
       await runFixtureOutcome(id, directory)
       const content = await fs.readFile(path.join(directory, evidence))
       if (id === "browser") {

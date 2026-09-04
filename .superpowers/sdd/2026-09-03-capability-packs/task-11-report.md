@@ -61,3 +61,11 @@ The live serving stack did not expose a server commit. The runner supports `QWEN
 - Raw-output destinations must be Git-ignored and not symlinked. Errors are redacted. Structured suite/trace parsing and typed redaction remove unsafe assertions. Scoped lint is clean.
 - Missing --case values fail. Each case uses its own SQLite file. Checkpoints require actual completed database records with the known fact and source artifact; deleting the database fails the regression.
 - Real Qwen re-evaluation from the committed fix is pending. The old result does not establish acceptance of this revision.
+
+## Review fix round 2
+
+The reviewer accepted the external verifiers, actual schema gate, settings and provenance implementation. Remaining findings were directory-wide raw ignore validation, opaque diagnostics, and meaningful alternative profiles. Raw sinks now require the entire directory to be Git-ignored and reject pre-existing non-regular/symlink files. A finite public error-message list replaces opaque errors with a generic message. Mobile offers ios, android, and all; every activation must match the expected minimal selection.
+
+The first committed-code multi-case run was stopped after the browser baseline made 221 invalid task calls using the literal agent name `...`. This is recorded as an invalid/incomplete evaluation, not accepted or deadline-failed evidence. Both arms now receive the same explicit instruction to report BLOCKED when capability discovery is absent. Cleanup of the owned runner/CLI/screen was confirmed. The rerun is pending.
+
+Focused tests: 23 passed, 117 assertions. This includes actual Chromium rendering, iOS Simulator compilation, checkpoint database existence/state, raw directory ignore regression, opaque diagnostics, alternative profiles, and process cleanup. Typecheck and scoped lint verification follow in the final result.

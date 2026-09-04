@@ -184,7 +184,7 @@ export async function validateRawOutput(directory: string) {
   await ancestor(resolved)
   const result = await runOwnedProcess({
     command: "/usr/bin/git",
-    args: ["check-ignore", "--quiet", "--", path.join(resolved, "trace.jsonl")],
+    args: ["check-ignore", "--quiet", "--", resolved + path.sep],
     cwd: path.join(import.meta.dir, "../.."),
     environment: process.env,
   })
@@ -494,7 +494,7 @@ async function evaluate(
         "--auto",
         ...(suite.model.settings.reasoning === true ? ["--thinking"] : []),
         "--",
-        definition.prompt ?? definition.description ?? definition.id,
+        `${definition.requiredCapabilities?.length ? "First inspect the available tools. If capability discovery is unavailable, reply BLOCKED and stop. Do not invent tool names or delegate to an agent named '...'. " : ""}${definition.prompt ?? definition.description ?? definition.id}`,
       ],
       cwd: path.join(import.meta.dir, "../.."),
       environment: evaluationEnvironment(directory, configDirectory, eventFile),
@@ -510,6 +510,10 @@ async function evaluate(
     await validateRawOutput(rawOutput)
     await fs.mkdir(rawOutput, { recursive: true })
     const prefix = path.join(rawOutput, `${definition.id}-${mode}`)
+    for (const file of [`${prefix}.jsonl`, `${prefix}.stderr`, `${prefix}.events.jsonl`]) {
+      const entry = await fs.lstat(file).catch(() => undefined)
+      if (entry && (!entry.isFile() || entry.isSymbolicLink())) throw new Error("Raw artifact must be a regular file")
+    }
     await Promise.all([
       fs.writeFile(`${prefix}.jsonl`, result.stdout, "utf8"),
       fs.writeFile(`${prefix}.stderr`, result.stderr, "utf8"),
@@ -657,6 +661,20 @@ async function prepareOutcomeFixture(definition: CaseDefinition, directory: stri
           },
         ],
         profiles: {
+          ...(definition.id === "mobile"
+            ? {
+                all: {
+                  description: "Both iOS and Android tooling; unnecessary for an iOS-only request.",
+                  skills: [],
+                  runtimes: ["fixture"],
+                },
+                android: {
+                  description: "Android-only tooling; unnecessary for an iOS request.",
+                  skills: [],
+                  runtimes: ["fixture"],
+                },
+              }
+            : {}),
           ...(definition.id === "missing-dependency-recovery"
             ? {
                 repair: {
@@ -867,8 +885,10 @@ export async function verifyCriterion(
     return { criterion: criterion.id, passed, evidenceRef: `tool:${verifier.name}` }
   }
   if (verifier.type === "activation") {
-    const activation = activations.find((item) => item.capability === verifier.capability)
-    const passed = !!activation && (!verifier.profiles || sameStrings(activation.profiles, verifier.profiles))
+    const selected = activations.filter((item) => item.capability === verifier.capability)
+    const passed =
+      selected.length > 0 &&
+      selected.every((activation) => !verifier.profiles || sameStrings(activation.profiles, verifier.profiles))
     return { criterion: criterion.id, passed, evidenceRef: `activation:${verifier.capability}` }
   }
   if (verifier.type === "event") {
@@ -1085,7 +1105,24 @@ async function sourceIdentity() {
 
 if (import.meta.main) {
   await main().catch((error) => {
-    process.stderr.write(`${String(redact(error instanceof Error ? error.message : String(error)))}\n`)
+    process.stderr.write(`${publicFailure(error)}\n`)
     process.exitCode = 1
   })
+}
+
+export function publicFailure(error: unknown) {
+  const message = error instanceof Error ? error.message : ""
+  const safe = new Set([
+    "--case requires a value",
+    "--output requires a value",
+    "--raw-output requires a value",
+    "RUNPOD_QWEN_API_KEY is required",
+    "One or more requested eval cases do not exist",
+    "Raw output must be inside an explicitly Git-ignored directory",
+    "Raw output must not use symlink paths",
+    "Raw artifact must be a regular file",
+  ])
+  return safe.has(message)
+    ? message
+    : "Capability evaluation failed. Check provider availability and the configured fixture prerequisites."
 }
