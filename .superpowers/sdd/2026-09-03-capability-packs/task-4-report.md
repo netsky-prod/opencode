@@ -56,3 +56,30 @@ bun test test/tool-*.test.ts test/application-tools.test.ts
 
 - A direct per-file `bunx oxlint` invocation could not parse the repository's existing `.oxlintrc.json` because that CLI invocation rejects `options.typeAware` outside its expected root configuration shape. Required tests and Core typechecking are clean.
 - A capability runtime shared by several profiles must register origins consistently with the profile exposure it intends. The current origin contract supports one optional profile per decorated registration; capability-only origins intentionally mean visibility under any active profile for that pack.
+
+## Review Fix Round 1
+
+### Findings Addressed
+
+1. A materialization is now bound to the Session ID that created it. Settlement with another Session ID returns a normal model-facing error before tool execution or output retention, so the caller cannot redirect a captured materialization's effects or stored output to another Session.
+2. Registration precedence is now visibility-aware. Materialization walks each Location registration stack newest-to-oldest under the captured active pack/profile snapshot and falls back to the application registration only when no visible Location registration exists.
+3. Settlement re-resolves the current registration under that same captured visibility snapshot before comparing identities. A new visible registration makes the call stale; an overlay owned by a capability active only in another Session neither hides nor stales the advertised configured tool.
+4. Permission filtering still runs after the highest visible registration is resolved, so a denied winner does not reveal a lower registration.
+
+### Review RED Evidence
+
+- Cross-session settlement executed the tool and returned retained output under the second Session instead of the expected materialization-ownership error.
+- A visible `browser/default` registration beneath an invisible `browser/diagnostics` registration disappeared entirely because the previous implementation selected only the absolute stack winner before filtering.
+- Adding a capability overlay active in another Session caused settlement of an already advertised application tool to return `Stale tool call` because stale validation also selected the absolute stack winner.
+
+The focused test run was deterministic: 3 passed and the 3 new regressions failed for the exact behaviors above.
+
+### Review GREEN Evidence
+
+- Focused materialization, guidance, skill-loader, and registry suites: 30 passed, 0 failed; Core `tsgo --noEmit` passed.
+- V2 runner and recorded-runner suites: 88 passed, 0 failed.
+- Broader Core tool and application-tool suites: 119 passed, 0 failed.
+
+### Review-Fix Concerns
+
+- No new runtime concern. The registration resolver is synchronous and captures only immutable activation/profile sets for the provider turn; tool execution remains captured once settlement starts.

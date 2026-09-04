@@ -50,19 +50,37 @@ const registryLayer = Layer.effect(
     const capabilities = yield* CapabilityState.Service
     const resources = yield* ToolOutputStore.Service
     type Registration = { readonly identity: object; readonly tool: AnyTool }
+    type Active = ReadonlyMap<string, ReadonlySet<string>>
     const local = new Map<string, Array<{ readonly token: object; readonly registration: Registration }>>()
 
-    const settleWith = Effect.fn("ToolRegistry.settle")(function* (input: ExecuteInput, advertised?: object) {
-      const registration =
-        local.get(input.call.name)?.at(-1)?.registration ?? applications.entries().get(input.call.name)
+    const visible = (registration: Registration, active: Active) => {
+      const source = origin(registration.tool)
+      if (!source || !("capability" in source) || source.capability === undefined) return true
+      const profiles = active.get(source.capability)
+      return profiles !== undefined && (source.profile === undefined || profiles.has(source.profile))
+    }
+
+    const resolve = (name: string, active: Active) => {
+      const registration = local.get(name)?.findLast((entry) => visible(entry.registration, active))?.registration
+      if (registration) return registration
+      const application = applications.entries().get(name)
+      return application && visible(application, active) ? application : undefined
+    }
+
+    const settleWith = Effect.fn("ToolRegistry.settle")(function* (
+      input: ExecuteInput,
+      advertised: object,
+      active: Active,
+    ) {
+      const registration = resolve(input.call.name, active)
       if (!registration)
         return {
           result: {
             type: "error" as const,
-            value: advertised ? `Stale tool call: ${input.call.name}` : `Unknown tool: ${input.call.name}`,
+            value: `Stale tool call: ${input.call.name}`,
           },
         }
-      if (advertised && registration.identity !== advertised)
+      if (registration.identity !== advertised)
         return { result: { type: "error" as const, value: `Stale tool call: ${input.call.name}` } }
       const pending = yield* settle(registration.tool, input.call, {
         sessionID: input.sessionID,
@@ -109,27 +127,25 @@ const registryLayer = Layer.effect(
         )
       }),
       materialize: Effect.fn("ToolRegistry.materialize")(function* (sessionID, permissions = []) {
-        const registrations = new Map(applications.entries())
-        for (const [name, entries] of local) {
-          const registration = entries.at(-1)?.registration
-          if (registration) registrations.set(name, registration)
-        }
         const active = new Map(
           (yield* capabilities.list(sessionID)).map((activation) => [activation.id, new Set(activation.profiles)]),
         )
-        for (const [name, registration] of registrations) {
-          const source = origin(registration.tool)
-          if (!source || !("capability" in source) || source.capability === undefined) continue
-          const profiles = active.get(source.capability)
-          if (!profiles || (source.profile !== undefined && !profiles.has(source.profile))) registrations.delete(name)
+        const registrations = new Map<string, Registration>()
+        for (const name of new Set([...applications.entries().keys(), ...local.keys()])) {
+          const registration = resolve(name, active)
+          if (registration) registrations.set(name, registration)
         }
         for (const [name, registration] of registrations)
           if (whollyDisabled(permission(registration.tool, name), permissions)) registrations.delete(name)
         return {
           definitions: Array.from(registrations, ([name, registration]) => definition(name, registration.tool)),
           settle: (input) => {
+            if (input.sessionID !== sessionID)
+              return Effect.succeed({
+                result: { type: "error", value: "Tool materialization belongs to another session" },
+              })
             const registration = registrations.get(input.call.name)
-            if (registration) return settleWith(input, registration.identity)
+            if (registration) return settleWith(input, registration.identity, active)
             return Effect.succeed({ result: { type: "error", value: `Unknown tool: ${input.call.name}` } })
           },
         }

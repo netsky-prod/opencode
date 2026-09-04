@@ -13,6 +13,7 @@ import { SkillV2 } from "@opencode-ai/core/skill"
 import { SkillGuidance } from "@opencode-ai/core/skill/guidance"
 import { SystemContext } from "@opencode-ai/core/system-context"
 import { SkillTool } from "@opencode-ai/core/tool/skill"
+import { ApplicationTools } from "@opencode-ai/core/tool/application-tools"
 import { Tool } from "@opencode-ai/core/tool/tool"
 import { ToolRegistry } from "@opencode-ai/core/tool/registry"
 import { ToolOutputStore } from "@opencode-ai/core/tool-output-store"
@@ -27,6 +28,7 @@ const identity = {
 }
 
 const activations = new Map<SessionV2.ID, CapabilityState.Activation[]>()
+const retained: ToolOutputStore.BoundInput[] = []
 const state = CapabilityState.Service.of({
   list: (sessionID) => Effect.succeed(activations.get(sessionID) ?? []),
   enable: (input) =>
@@ -43,9 +45,9 @@ const state = CapabilityState.Service.of({
   status: (sessionID) => Effect.succeed(activations.get(sessionID) ?? []),
 })
 const outputStore = Layer.mock(ToolOutputStore.Service, {
-  bound: (input) => Effect.succeed({ output: input.output, outputPaths: [] }),
+  bound: (input) => Effect.sync(() => retained.push(input)).pipe(Effect.as({ output: input.output, outputPaths: [] })),
 })
-const layer = AppNodeBuilder.build(ToolRegistry.node, [
+const layer = AppNodeBuilder.build(LayerNode.group([ApplicationTools.node, ToolRegistry.node]), [
   [CapabilityState.node, Layer.succeed(CapabilityState.Service, state)],
   [ToolOutputStore.node, outputStore],
 ])
@@ -121,6 +123,104 @@ const call = (name: string) => ({
 })
 
 describe("capability materialization", () => {
+  it.effect("rejects settlement through a different session before execution or output retention", () =>
+    Effect.gen(function* () {
+      activations.clear()
+      retained.length = 0
+      let executions = 0
+      const registry = yield* ToolRegistry.Service
+      yield* registry.register({
+        guarded: Tool.make({
+          description: "Record execution",
+          input: Schema.Struct({}),
+          output: Schema.String,
+          execute: () => Effect.sync(() => executions++).pipe(Effect.as("guarded")),
+        }),
+      })
+      const materialized = yield* registry.materialize(first)
+
+      expect(
+        yield* materialized.settle({
+          ...call("guarded"),
+          sessionID: second,
+        }),
+      ).toEqual({
+        result: { type: "error", value: "Tool materialization belongs to another session" },
+      })
+      expect(executions).toBe(0)
+      expect(retained).toEqual([])
+    }),
+  )
+
+  it.effect("resolves the newest visible local registration and falls back to the application registration", () =>
+    Effect.gen(function* () {
+      activations.clear()
+      const applications = yield* ApplicationTools.Service
+      const registry = yield* ToolRegistry.Service
+      yield* applications.register({ shared: echo("application") })
+      yield* registry.register({
+        shared: Tool.withOrigin(echo("default"), {
+          type: "mcp",
+          serverID: "playwright",
+          capability: "browser",
+          profile: "default",
+        }),
+      })
+      yield* registry.register({
+        shared: Tool.withOrigin(echo("diagnostics"), {
+          type: "mcp",
+          serverID: "playwright",
+          capability: "browser",
+          profile: "diagnostics",
+        }),
+      })
+      yield* state.enable({ sessionID: first, id: "browser", profiles: ["default"] })
+
+      const enabled = yield* registry.materialize(first)
+      expect(names(enabled)).toContain("shared")
+      expect(yield* enabled.settle(call("shared"))).toMatchObject({ result: { type: "text", value: "default" } })
+
+      const configured = yield* registry.materialize(second)
+      expect(names(configured)).toContain("shared")
+      expect(
+        yield* configured.settle({
+          ...call("shared"),
+          sessionID: second,
+        }),
+      ).toMatchObject({ result: { type: "text", value: "application" } })
+    }),
+  )
+
+  it.effect("an inactive overlay does not stale an advertised configured tool", () =>
+    Effect.gen(function* () {
+      activations.clear()
+      const applications = yield* ApplicationTools.Service
+      const registry = yield* ToolRegistry.Service
+      yield* applications.register({ configured: echo("application") })
+      yield* state.enable({ sessionID: first, id: "browser", profiles: ["default"] })
+      const advertised = yield* registry.materialize(second)
+      yield* registry.register({
+        configured: Tool.withOrigin(echo("inactive"), {
+          type: "mcp",
+          serverID: "playwright",
+          capability: "browser",
+          profile: "default",
+        }),
+      })
+
+      expect(yield* (yield* registry.materialize(first)).settle(call("configured"))).toMatchObject({
+        result: { type: "text", value: "inactive" },
+      })
+
+      expect(
+        yield* advertised.settle({
+          ...call("configured"),
+          sessionID: second,
+        }),
+      ).toMatchObject({ result: { type: "text", value: "application" } })
+    }),
+  )
+
   it.effect("only the enabling session receives pack tools for the selected profile", () =>
     Effect.gen(function* () {
       activations.clear()
