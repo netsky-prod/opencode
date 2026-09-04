@@ -17,9 +17,11 @@ export const StatusMap = Schema.Record(Schema.String, MCP.Status)
 export const AuthStartResponse = Schema.Struct({
   authorizationUrl: Schema.String,
   oauthState: Schema.String,
+  flowToken: Schema.String,
 })
 export const AuthCallbackPayload = Schema.Struct({
   code: Schema.String,
+  flowToken: Schema.String,
 })
 export const AuthRemoveResponse = Schema.Struct({
   success: Schema.Literal(true),

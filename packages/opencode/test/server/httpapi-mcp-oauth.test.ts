@@ -21,9 +21,17 @@ const testMcpHandlers = HttpApiBuilder.group(TestHttpApi, "mcp", (handlers) =>
       .handle("status", () => Effect.die("unexpected MCP status"))
       .handle("add", () => Effect.die("unexpected MCP add"))
       .handle("authStart", () =>
-        Effect.succeed({ authorizationUrl: "https://auth.example/start", oauthState: "state-123" }),
+        Effect.succeed({
+          authorizationUrl: "https://auth.example/start",
+          oauthState: "state-123",
+          flowToken: "flow-123",
+        }),
       )
-      .handle("authCallback", () => Effect.die("unexpected MCP authCallback"))
+      .handle("authCallback", ({ payload }) =>
+        payload.code === "code-123" && payload.flowToken === "flow-123"
+          ? Effect.succeed({ status: "connected" as const })
+          : Effect.die("unexpected MCP authCallback payload"),
+      )
       .handle("authAuthenticate", () => Effect.die("unexpected MCP authAuthenticate"))
       .handle("authRemove", () => Effect.die("unexpected MCP authRemove"))
       .handle("connect", () => Effect.die("unexpected MCP connect"))
@@ -67,7 +75,31 @@ describe("mcp HttpApi OAuth", () => {
       expect(yield* response.json).toEqual({
         authorizationUrl: "https://auth.example/start",
         oauthState: "state-123",
+        flowToken: "flow-123",
       })
+    }),
+  )
+
+  it.live("requires the OAuth flow token when finishing OAuth", () =>
+    Effect.gen(function* () {
+      const response = yield* HttpClientRequest.post(McpPaths.authCallback.replace(":name", "demo")).pipe(
+        HttpClientRequest.bodyJson({ code: "code-123" }),
+        Effect.flatMap(HttpClient.execute),
+      )
+
+      expect(response.status).toBe(400)
+    }),
+  )
+
+  it.live("forwards the OAuth flow token when finishing OAuth", () =>
+    Effect.gen(function* () {
+      const response = yield* HttpClientRequest.post(McpPaths.authCallback.replace(":name", "demo")).pipe(
+        HttpClientRequest.bodyJson({ code: "code-123", flowToken: "flow-123" }),
+        Effect.flatMap(HttpClient.execute),
+      )
+
+      expect(response.status).toBe(200)
+      expect(yield* response.json).toEqual({ status: "connected" })
     }),
   )
 })

@@ -8559,6 +8559,7 @@ export type McpAuthStartResponses = {
   200: {
     authorizationUrl: string
     oauthState: string
+    flowToken: string
   }
 }
 
@@ -8567,6 +8568,7 @@ export type McpAuthStartResponse = McpAuthStartResponses[keyof McpAuthStartRespo
 export type McpAuthCallbackData = {
   body?: {
     code: string
+    flowToken: string
   }
   path: {
     name: string

@@ -418,7 +418,7 @@ const scenarios: Scenario[] = [
     .at((ctx) => ({
       path: route("/mcp/{name}/auth/callback", { name: "httpapi-missing" }),
       headers: ctx.headers(),
-      body: { code: "code" },
+      body: { code: "code", flowToken: "flow-token" },
     }))
     .json(404, object, "status"),
   http.protected

@@ -212,9 +212,10 @@ mcpTest.instance("failed reauthentication preserves existing credentials", () =>
     yield* auth.updateClientInfo(name, { clientId: "dynamic-client", clientSecret: "dynamic-secret" }, server.url)
     yield* auth.updateTokens(name, { accessToken: "working-token" }, server.url)
     yield* mcp.add(name, remote(server.url))
-    expect((yield* mcp.startAuth(name)).authorizationUrl).toContain("/authorize")
+    const flow = yield* mcp.startAuth(name)
+    expect(flow.authorizationUrl).toContain("/authorize")
 
-    expect(yield* mcp.finishAuth(name, "invalid-code")).toEqual({
+    expect(yield* mcp.finishAuth(name, "invalid-code", flow.flowToken)).toEqual({
       status: "failed",
       error: "OAuth completion failed: Token exchange failed",
     })
@@ -237,10 +238,11 @@ mcpTest.instance("successful reauthentication commits replacement credentials", 
     yield* auth.updateClientInfo(name, { clientId: "old-client" }, server.url)
     yield* auth.updateTokens(name, { accessToken: "old-token" }, server.url)
     yield* mcp.add(name, remote(server.url))
-    expect((yield* mcp.startAuth(name)).authorizationUrl).toContain("/authorize")
+    const flow = yield* mcp.startAuth(name)
+    expect(flow.authorizationUrl).toContain("/authorize")
     expect((yield* auth.get(name))?.tokens?.accessToken).toBe("old-token")
 
-    expect((yield* mcp.finishAuth(name, "valid-code")).status).toBe("connected")
+    expect((yield* mcp.finishAuth(name, "valid-code", flow.flowToken)).status).toBe("connected")
     const entry = yield* auth.get(name)
     expect(entry?.tokens?.accessToken).toBe("replacement-token")
     expect(entry?.clientInfo?.clientId).toBe("replacement-client")
@@ -248,12 +250,11 @@ mcpTest.instance("successful reauthentication commits replacement credentials", 
   }),
 )
 
-mcpTest.instance("an old authorization code cannot settle under a replacement registration", () =>
+mcpTest.instance("an old authorization flow cannot settle a replacement OAuth registration", () =>
   Effect.gen(function* () {
     yield* stopOAuthCallback
     const firstServer = yield* serveOAuthMcp()
     const secondServer = yield* serveOAuthMcp()
-    secondServer.allowAnonymous()
     const mcp = yield* MCP.Service
     const auth = yield* McpAuth.Service
     const name = "test-stale-auth-code"
@@ -261,18 +262,31 @@ mcpTest.instance("an old authorization code cannot settle under a replacement re
     yield* auth.updateClientInfo(name, { clientId: "old-client" }, firstServer.url)
     yield* auth.updateTokens(name, { accessToken: "old-token" }, firstServer.url)
     const first = yield* mcp.add(name, remote(firstServer.url))
-    expect((yield* mcp.startAuth(name)).authorizationUrl).toContain("/authorize")
+    const firstFlow = yield* mcp.startAuth(name)
+    expect(firstFlow.authorizationUrl).toContain("/authorize")
 
     yield* mcp.remove(first.registration)
     const second = yield* mcp.add(name, remote(secondServer.url))
+    const secondFlow = yield* mcp.startAuth(name)
+    expect(secondFlow.authorizationUrl).toContain("/authorize")
+    expect(firstFlow.flowToken).toHaveLength(64)
+    expect(secondFlow.flowToken).toHaveLength(64)
+    expect(firstFlow.flowToken).not.toBe(secondFlow.flowToken)
     const listed = secondServer.listToolsCalls()
-    const settled = yield* Effect.exit(mcp.finishAuth(name, "valid-code"))
+    const credentials = structuredClone(yield* auth.get(name))
+    const settled = yield* Effect.exit(mcp.finishAuth(name, "valid-code", firstFlow.flowToken))
 
     expect(Exit.isFailure(settled)).toBe(true)
     expect(secondServer.listToolsCalls()).toBe(listed)
+    expect((yield* mcp.connection(second.registration))?.status).toBe("needs_auth")
+    expect(yield* mcp.status()).toEqual({ [name]: { status: "needs_auth" } })
+    expect(yield* auth.get(name)).toEqual(credentials)
+
+    expect((yield* mcp.finishAuth(name, "valid-code", secondFlow.flowToken)).status).toBe("connected")
+    expect(secondServer.listToolsCalls()).toBeGreaterThan(listed)
     expect((yield* mcp.connection(second.registration))?.status).toBe("connected")
-    expect((yield* auth.get(name))?.tokens?.accessToken).toBe("old-token")
-    expect((yield* auth.get(name))?.serverUrl).toBe(firstServer.url)
+    expect((yield* auth.get(name))?.tokens?.accessToken).toBe("replacement-token")
+    expect((yield* auth.get(name))?.serverUrl).toBe(secondServer.url)
   }),
 )
 

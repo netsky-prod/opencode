@@ -98,6 +98,15 @@ function makeRegistration(name: string) {
   return Object.freeze({ name }) as Registration
 }
 
+declare const AuthFlowTokenType: unique symbol
+type AuthFlowToken = string & { readonly [AuthFlowTokenType]: typeof AuthFlowTokenType }
+
+function makeAuthFlowToken() {
+  return Array.from(crypto.getRandomValues(new Uint8Array(32)))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("") as AuthFlowToken
+}
+
 function createClient(directory: string) {
   const client = new Client({ name: "opencode", version: InstallationVersion }, CLIENT_OPTIONS)
   client.setRequestHandler(ListRootsRequestSchema, () =>
@@ -135,11 +144,12 @@ export type Status = Schema.Schema.Type<typeof Status>
 // Store transports for OAuth servers to allow finishing auth
 type TransportWithAuth = StreamableHTTPClientTransport | SSEClientTransport
 interface PendingOAuthTransport {
+  readonly flowToken: AuthFlowToken
   readonly registration: Registration
   readonly transport: TransportWithAuth
   readonly provider?: McpOAuthPendingProvider
 }
-const pendingOAuthTransports = new Map<Registration, PendingOAuthTransport>()
+const pendingOAuthTransports = new Map<AuthFlowToken, PendingOAuthTransport>()
 
 // Prompt cache types
 type PromptInfo = Awaited<ReturnType<MCPClient["listPrompts"]>>["prompts"][number]
@@ -165,6 +175,7 @@ interface CreateResult {
 interface AuthResult {
   authorizationUrl: string
   oauthState: string
+  flowToken: AuthFlowToken
   client?: MCPClient
 }
 
@@ -240,12 +251,16 @@ export interface Interface {
   ) => Effect.Effect<Awaited<ReturnType<MCPClient["readResource"]>> | undefined>
   readonly startAuth: (
     mcpName: string,
-  ) => Effect.Effect<{ authorizationUrl: string; oauthState: string }, NotFoundError>
+  ) => Effect.Effect<{ authorizationUrl: string; oauthState: string; flowToken: string }, NotFoundError>
   readonly authenticate: (
     mcpName: string,
     onAuthorization?: (authorizationUrl: string) => void,
   ) => Effect.Effect<Status, NotFoundError>
-  readonly finishAuth: (mcpName: string, authorizationCode: string) => Effect.Effect<Status, NotFoundError>
+  readonly finishAuth: (
+    mcpName: string,
+    authorizationCode: string,
+    flowToken: string,
+  ) => Effect.Effect<Status, NotFoundError>
   readonly removeAuth: (mcpName: string) => Effect.Effect<void>
   readonly supportsOAuth: (mcpName: string) => Effect.Effect<boolean, NotFoundError>
   readonly hasStoredTokens: (mcpName: string) => Effect.Effect<boolean>
@@ -268,15 +283,16 @@ const layer = Layer.effect(
       closePromise(() => pending.transport.close(), timeout)
 
     const takePending = (registration: Registration) => {
-      const pending = pendingOAuthTransports.get(registration)
-      if (!pending || pending.registration !== registration) return undefined
-      pendingOAuthTransports.delete(registration)
-      return pending
+      for (const [flowToken, pending] of pendingOAuthTransports) {
+        if (pending.registration !== registration) continue
+        pendingOAuthTransports.delete(flowToken)
+        return pending
+      }
     }
 
     const replacePending = (pending: PendingOAuthTransport, timeout?: number) => {
       const previous = takePending(pending.registration)
-      pendingOAuthTransports.set(pending.registration, pending)
+      pendingOAuthTransports.set(pending.flowToken, pending)
       return previous ? closePending(previous, timeout) : Effect.void
     }
 
@@ -382,7 +398,7 @@ const layer = Layer.effect(
                   .pipe(Effect.ignore, Effect.as(undefined))
               } else {
                 lastStatus = { status: "needs_auth" as const }
-                return replacePending({ registration, transport }, mcp.timeout).pipe(
+                return replacePending({ flowToken: makeAuthFlowToken(), registration, transport }, mcp.timeout).pipe(
                   Effect.andThen(
                     events.publish(TuiEvent.ToastShow, {
                       title: "MCP Authentication Required",
@@ -1052,6 +1068,7 @@ const layer = Layer.effect(
       const oauthState = Array.from(crypto.getRandomValues(new Uint8Array(32)))
         .map((b) => b.toString(16).padStart(2, "0"))
         .join("")
+      const flowToken = makeAuthFlowToken()
       yield* auth.updateOAuthState(mcpName, oauthState)
       let capturedUrl: URL | undefined
       const authProvider = new McpOAuthPendingProvider(
@@ -1082,7 +1099,7 @@ const layer = Layer.effect(
           const client = createClient(directory)
           return client.connect(transport).then(async () => {
             await authProvider.commit()
-            return { authorizationUrl: "", oauthState, client } satisfies AuthResult
+            return { authorizationUrl: "", oauthState, flowToken, client } satisfies AuthResult
           })
         },
         catch: (error) => error,
@@ -1094,9 +1111,10 @@ const layer = Layer.effect(
                 Effect.andThen(Effect.fail(new NotFoundError({ name: mcpName }))),
               )
             }
-            return replacePending({ registration, transport, provider: authProvider }, mcpConfig.timeout).pipe(
-              Effect.as({ authorizationUrl: capturedUrl.toString(), oauthState } satisfies AuthResult),
-            )
+            return replacePending(
+              { flowToken, registration, transport, provider: authProvider },
+              mcpConfig.timeout,
+            ).pipe(Effect.as({ authorizationUrl: capturedUrl.toString(), oauthState, flowToken } satisfies AuthResult))
           }
           return Effect.die(error)
         }),
@@ -1163,25 +1181,24 @@ const layer = Layer.effect(
         throw new Error("OAuth state mismatch - potential CSRF attack")
       }
       yield* auth.clearOAuthState(mcpName)
-      return yield* finishAuthOwned(mcpName, code, registration)
+      return yield* finishAuthOwned(mcpName, code, result.flowToken)
     })
 
     const finishAuthOwned = Effect.fnUntraced(function* (
       mcpName: string,
       authorizationCode: string,
-      registration: Registration | undefined,
+      flowToken: string,
     ) {
       const s = yield* InstanceState.get(state)
-      if (!ownsRegistration(s, mcpName, registration)) {
-        return s.status[mcpName] ?? ({ status: "disabled" } satisfies Status)
+      const pending = pendingOAuthTransports.get(flowToken as AuthFlowToken)
+      if (!pending || pending.flowToken !== flowToken || pending.registration.name !== mcpName) {
+        if (!s.registrations[mcpName]) return yield* new NotFoundError({ name: mcpName })
+        throw new Error(`No pending OAuth flow for MCP server: ${mcpName}`)
       }
+      const registration = pending.registration
+      if (!ownsRegistration(s, mcpName, registration)) throw new Error(`Stale OAuth flow for MCP server: ${mcpName}`)
       const initialConfig = yield* requireMcpConfig(mcpName)
-      if (!ownsRegistration(s, mcpName, registration)) {
-        return s.status[mcpName] ?? ({ status: "disabled" } satisfies Status)
-      }
-      const pending = pendingOAuthTransports.get(registration)
-      if (!pending) throw new Error(`No pending OAuth flow for MCP server: ${mcpName}`)
-      if (pending.registration !== registration) throw new Error(`Stale OAuth flow for MCP server: ${mcpName}`)
+      if (!ownsRegistration(s, mcpName, registration)) throw new Error(`Stale OAuth flow for MCP server: ${mcpName}`)
 
       const error = yield* Effect.tryPromise({
         try: () => pending.transport.finishAuth(authorizationCode),
@@ -1206,8 +1223,8 @@ const layer = Layer.effect(
       if (!ownsRegistration(s, mcpName, registration)) {
         return s.status[mcpName] ?? ({ status: "disabled" } satisfies Status)
       }
-      if (pendingOAuthTransports.get(registration) === pending) {
-        pendingOAuthTransports.delete(registration)
+      if (pendingOAuthTransports.get(pending.flowToken) === pending) {
+        pendingOAuthTransports.delete(pending.flowToken)
         yield* closePending(pending, initialConfig.timeout)
       }
       if (!ownsRegistration(s, mcpName, registration)) {
@@ -1219,9 +1236,12 @@ const layer = Layer.effect(
       return yield* createAndStore(mcpName, { ...mcpConfig, enabled: true }, registration)
     })
 
-    const finishAuth = Effect.fn("MCP.finishAuth")(function* (mcpName: string, authorizationCode: string) {
-      const s = yield* InstanceState.get(state)
-      return yield* finishAuthOwned(mcpName, authorizationCode, s.registrations[mcpName])
+    const finishAuth = Effect.fn("MCP.finishAuth")(function* (
+      mcpName: string,
+      authorizationCode: string,
+      flowToken: string,
+    ) {
+      return yield* finishAuthOwned(mcpName, authorizationCode, flowToken)
     })
 
     const removeAuth = Effect.fn("MCP.removeAuth")(function* (mcpName: string) {
