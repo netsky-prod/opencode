@@ -10,6 +10,7 @@ Supported forms:
 - /loop list: call loop_list.
 - /loop pause <id>: call loop_update with state paused.
 - /loop resume <id>: call loop_update with state active.
+- /loop checkpoint <id>: call loop_checkpoint with the latest objective, evidence, and next action.
 - /loop delete <id>: call loop_delete.
 - /loop -- <prompt>: remove the leading "-- " and create an adaptive loop.
 

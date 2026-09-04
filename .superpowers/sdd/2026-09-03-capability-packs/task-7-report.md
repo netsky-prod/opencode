@@ -55,3 +55,51 @@ exit 0
 - Stored JSON requires the exact checkpoint and nested record shapes, confidence literals, and no extra fields. Successful decodes return canonical normalized values; malformed or semantically invalid storage is omitted with the typed diagnostic.
 - `SessionLoop` now uses the repository's `KeyedMutex` pattern for one critical read/merge/write section per loop ID. The regression preserves the checkpoint observation while the concurrent pause retains its state, cleared next run, and reason.
 - A true file-backed SQLite/database/service restart test reopens a new `SessionLoop` layer and reads the persisted checkpoint.
+
+## Live-Gate Fix Round 2
+
+### Live Failure Evidence
+
+- A real `opencode run` with Qwen advertised no `loop_*` schemas. Its trace repeatedly selected `capability_search`, because the legacy `SessionTools.resolve` bridge materialized only capability-management definitions and active capability runtime definitions.
+
+### RED Evidence
+
+- The new actual-boundary regression, `bun test test/session/prompt.test.ts -t "session tools bridge always-on Core loop tools"`, initially resolved only the injected legacy `loop_create` collision; `loop_checkpoint`, `loop_delete`, `loop_list`, `loop_update`, and `loop_wakeup` were missing.
+- After admitting the six Core definitions, the same real callback test failed with `Unable to create loop`. Diagnostic tracing identified `PermissionV2.BlockedError`: loop tools used Core's default deny policy instead of the per-call legacy permission bridge.
+
+### GREEN Evidence
+
+- `SessionTools.resolve` now bridges exactly the six names exported by `LoopTool.names`, alongside the existing capability rules. Other Core legacy-equivalent tools remain filtered; a collision regression proves bridged `loop_create` supersedes legacy, while injected `bash` remains legacy.
+- All mutating loop tools now use `(context.permission ?? permission)`, matching capability tools. Bridged calls therefore make one canonical legacy permission request with `permission: "loop"`, `patterns: ["new"]`, and `always: ["*"]`; a `once` response settles without a second request.
+- The boundary regression invokes the bridged callbacks against a persisted session: create, structured checkpoint output, a fresh resolved list, cross-session checkpoint rejection, one-shot permission approval, and delete. It also verifies all six schemas are advertised.
+
+### Verification
+
+```text
+packages/opencode:
+bun test test/session/prompt.test.ts --timeout 30000 -t "session tools bridge (always-on Core loop tools|capability packs)"
+2 pass, 0 fail
+
+bun test test/command-loop.test.ts --timeout 30000
+1 pass, 0 fail
+
+packages/core:
+bun test test/session-loop.test.ts test/tool-loop.test.ts test/database-migration.test.ts test/location-layer.test.ts --timeout 30000
+43 pass, 0 fail
+
+bun typecheck
+exit 0
+
+bun script/migration.ts --check
+No schema changes, nothing to migrate
+
+packages/opencode:
+bun typecheck
+exit 0
+
+bun run lint -- [touched TypeScript files]
+0 errors; 18 pre-existing warnings in the legacy test files
+
+git diff --check
+exit 0
+```

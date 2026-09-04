@@ -26,6 +26,7 @@ import { LocationServiceMap } from "@/location-services"
 import { Location } from "@opencode-ai/core/location"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { ToolRegistry as CoreToolRegistry } from "@opencode-ai/core/tool/registry"
+import { LoopTool } from "@opencode-ai/core/tool/loop"
 import { CapabilityCatalog } from "@opencode-ai/core/capability/catalog"
 import { CapabilityState } from "@opencode-ai/core/capability/state"
 import { PluginV2 } from "@opencode-ai/core/plugin"
@@ -33,7 +34,7 @@ import { AgentV2 } from "@opencode-ai/core/agent"
 import { SessionV2 } from "@opencode-ai/core/session"
 import { SessionMessage } from "@opencode-ai/core/session/message"
 import type { PermissionV2 } from "@opencode-ai/core/permission"
-import type { ToolDefinition } from "@opencode-ai/llm"
+import type { ToolContent, ToolDefinition } from "@opencode-ai/llm"
 
 const MCP_RESOURCE_TOOLS = {
   list: "list_mcp_resources",
@@ -539,6 +540,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: Resol
 })
 
 const capabilityTools = new Set(["capability_search", "capability_enable", "capability_disable", "capability_status"])
+const alwaysOnCoreTools = new Set<string>(LoopTool.names)
 
 function coreTools(input: { session: Session.Info; permissions: PermissionV1.Ruleset }) {
   return Effect.gen(function* () {
@@ -565,6 +567,7 @@ function coreTools(input: { session: Session.Info; permissions: PermissionV1.Rul
     const definitions = materialization.definitions.filter(
       (definition) =>
         capabilityTools.has(definition.name) ||
+        alwaysOnCoreTools.has(definition.name) ||
         (definition.name === "skill" && skillNames.size > 0) ||
         [...prefixes].some((prefix) => definition.name.startsWith(prefix)),
     )
@@ -643,7 +646,8 @@ function coreTool(
 }
 
 function legacyOutput(item: ToolDefinition, settlement: CoreToolRegistry.Settlement, input: ResolveInput) {
-  const content = settlement.output?.content ?? (settlement.result.type === "content" ? settlement.result.value : [])
+  const content: ReadonlyArray<ToolContent> =
+    settlement.output?.content ?? (settlement.result.type === "content" ? settlement.result.value : [])
   const text = content.filter((part) => part.type === "text").map((part) => part.text)
   const fallback = settlement.result.type === "content" ? "" : resultText(settlement.result.value)
   const structured = settlement.output?.structured ?? (settlement.result.type === "json" ? settlement.result.value : {})

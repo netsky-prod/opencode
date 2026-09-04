@@ -27,7 +27,7 @@ import { Image } from "../../src/image/image"
 import { Question } from "../../src/question"
 import { Todo } from "../../src/session/todo"
 import { Session } from "@/session/session"
-import { SessionMessageTable } from "@opencode-ai/core/session/sql"
+import { SessionLoopTable, SessionMessageTable, SessionTable } from "@opencode-ai/core/session/sql"
 import { LLM } from "../../src/session/llm"
 import { MessageV2 } from "../../src/session/message-v2"
 import { FSUtil } from "@opencode-ai/core/fs-util"
@@ -378,6 +378,13 @@ const capabilityToolOptions = (toolCallId: string) => ({
   messages: [],
   abortSignal: new AbortController().signal,
 })
+
+function bridgedToolOutput(value: unknown) {
+  if (typeof value !== "object" || value === null || !("output" in value) || typeof value.output !== "string") {
+    throw new Error("bridged tool did not return text output")
+  }
+  return { output: value.output }
+}
 
 // Wait for a session's runner to enter a busy state. SessionStatus is flipped
 // inside Runner.startShell's serialized transition, so cancel can't no-op once
@@ -1512,6 +1519,188 @@ noLLMServer.instance(
       })
       yield* permissions.reply({ requestID: search.request.id, reply: "once" })
       yield* awaitWithTimeout(Fiber.join(search.fiber), "capability search did not settle")
+      yield* Scope.close(scope, Exit.void)
+    }),
+  { config: cfg },
+  10_000,
+)
+
+noLLMServer.instance(
+  "session tools bridge always-on Core loop tools with persisted ownership and permission semantics",
+  () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const agents = yield* AgentSvc.Service
+      const providers = yield* ProviderSvc.Service
+      const permissions = yield* Permission.Service
+      const legacyRegistry = yield* ToolRegistry.Service
+      const originalLegacyTools = legacyRegistry.tools
+      const mutableLegacyRegistry = legacyRegistry as { tools: ToolRegistry.Interface["tools"] }
+      mutableLegacyRegistry.tools = (args) =>
+        originalLegacyTools(args).pipe(
+          Effect.map((items) => {
+            const base = items[0]
+            if (!base) return items
+            return [
+              ...items,
+              { ...base, id: "loop_create", description: "collision always-on Core loop tool" },
+              { ...base, id: "bash", description: "collision unbridged Core legacy tool" },
+            ]
+          }),
+        )
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          mutableLegacyRegistry.tools = originalLegacyTools
+        }),
+      )
+
+      const agent = yield* agents.get("build")
+      const model = yield* providers.getModel(ref.providerID, ref.modelID)
+      const first = yield* sessions.create({
+        title: "Loop bridge first",
+        permission: [{ permission: "loop", pattern: "*", action: "allow" }],
+      })
+      const second = yield* sessions.create({
+        title: "Loop bridge second",
+        permission: [{ permission: "loop", pattern: "*", action: "allow" }],
+      })
+      const approval = yield* sessions.create({
+        title: "Loop bridge approval",
+        permission: [{ permission: "loop", pattern: "*", action: "ask" }],
+      })
+      const firstTurn = yield* seed(first.id)
+      const secondTurn = yield* seed(second.id)
+      const approvalTurn = yield* seed(approval.id)
+      const { db } = yield* Database.Service
+      expect(
+        yield* db
+          .select({ id: SessionTable.id })
+          .from(SessionTable)
+          .where(eq(SessionTable.id, first.id))
+          .get()
+          .pipe(Effect.orDie),
+      ).toEqual({ id: first.id })
+      expect(yield* db.select().from(SessionLoopTable).all().pipe(Effect.orDie)).toEqual([])
+      const scope = yield* Scope.make()
+      const promptOps = {
+        cancel: () => Effect.void,
+        resolvePromptParts: (template: string) => Effect.succeed([{ type: "text" as const, text: template }]),
+        prompt: () => Effect.die("unexpected nested prompt"),
+      }
+      const resolveTools = (session: Session.Info, message: SessionV1.Assistant) =>
+        SessionTools.resolve({
+          agent,
+          model,
+          session,
+          processor: {
+            message,
+            updateToolCall: () => Effect.succeed(undefined),
+            completeToolCall: () => Effect.void,
+          },
+          bypassAgentCheck: false,
+          messages: [],
+          promptOps,
+        }).pipe(Effect.provideService(Scope.Scope, scope))
+
+      const firstTools = yield* resolveTools(first, firstTurn.assistant)
+      expect(
+        Object.keys(firstTools)
+          .filter((name) => name.startsWith("loop_"))
+          .toSorted(),
+      ).toEqual(["loop_checkpoint", "loop_create", "loop_delete", "loop_list", "loop_update", "loop_wakeup"])
+      expect(firstTools.loop_create.description).toContain("Create a durable fixed or adaptive loop")
+      expect(firstTools.loop_checkpoint.inputSchema).toHaveProperty("jsonSchema")
+      expect(firstTools.bash.description).toBe("collision unbridged Core legacy tool")
+
+      const created = bridgedToolOutput(
+        yield* Effect.promise(() =>
+          firstTools.loop_create.execute!(
+            { prompt: "Verify the persisted bridge", schedule: { kind: "adaptive" } },
+            capabilityToolOptions("call-loop-create"),
+          ),
+        ),
+      )
+      const loopID = created.output.match(/^Loop (loop_[^\n]+)/m)?.[1]
+      if (!loopID) throw new Error("loop_create did not return a loop ID")
+
+      const checkpointed = yield* Effect.promise(() =>
+        firstTools.loop_checkpoint.execute!(
+          {
+            id: loopID,
+            objective: "Expose durable loops to OpenCode",
+            verifiedFacts: [{ claim: "The loop bridge is persisted", evidence: ["loop_create callback"] }],
+            nextAction: "List the loop",
+          },
+          capabilityToolOptions("call-loop-checkpoint"),
+        ),
+      )
+      expect(checkpointed).toMatchObject({
+        title: "loop_checkpoint",
+        metadata: { structured: { message: expect.stringContaining(`Loop ${loopID}`) } },
+        output: expect.stringContaining("checkpoint: objective=Expose durable loops to OpenCode"),
+      })
+
+      const reloadedTools = yield* resolveTools(first, firstTurn.assistant)
+      const listed = bridgedToolOutput(
+        yield* Effect.promise(() => reloadedTools.loop_list.execute!({}, capabilityToolOptions("call-loop-list"))),
+      )
+      expect(listed.output).toContain(loopID)
+      expect(listed.output).toContain("next action=List the loop")
+
+      const secondTools = yield* resolveTools(second, secondTurn.assistant)
+      const isolated = bridgedToolOutput(
+        yield* Effect.promise(() =>
+          secondTools.loop_list.execute!({}, capabilityToolOptions("call-loop-list-isolated")),
+        ),
+      )
+      expect(isolated.output).toBe("No loops")
+      const foreignCheckpoint = yield* Effect.tryPromise({
+        try: () =>
+          secondTools.loop_checkpoint.execute!(
+            { id: loopID, observations: ["must not be visible"] },
+            capabilityToolOptions("call-loop-checkpoint-foreign"),
+          ),
+        catch: (error) => error,
+      }).pipe(Effect.exit)
+      expect(Exit.isFailure(foreignCheckpoint) ? Cause.pretty(foreignCheckpoint.cause) : "").toContain(
+        "Unable to update loop checkpoint",
+      )
+
+      const approvalTools = yield* resolveTools(approval, approvalTurn.assistant)
+      const approvalFiber = yield* Effect.forkIn(
+        Effect.promise(() =>
+          approvalTools.loop_create.execute!(
+            { prompt: "Ask once", schedule: { kind: "adaptive" } },
+            capabilityToolOptions("call-loop-create-approval"),
+          ),
+        ),
+        scope,
+      )
+      const request = yield* pollWithTimeout(
+        permissions.list().pipe(Effect.map((items) => items.find((item) => item.sessionID === approval.id))),
+        "loop create permission request was not bridged",
+      )
+      expect({ permission: request.permission, patterns: request.patterns, always: request.always }).toEqual({
+        permission: "loop",
+        patterns: ["new"],
+        always: ["*"],
+      })
+      yield* permissions.reply({ requestID: request.id, reply: "once" })
+      yield* awaitWithTimeout(Fiber.join(approvalFiber), "one-shot loop create did not settle")
+      expect((yield* permissions.list()).filter((item) => item.sessionID === approval.id)).toEqual([])
+
+      const deleted = bridgedToolOutput(
+        yield* Effect.promise(() =>
+          reloadedTools.loop_delete.execute!({ id: loopID }, capabilityToolOptions("call-loop-delete")),
+        ),
+      )
+      expect(deleted.output).toContain(`Deleted ${loopID}`)
+      const empty = bridgedToolOutput(
+        yield* Effect.promise(() =>
+          reloadedTools.loop_list.execute!({}, capabilityToolOptions("call-loop-list-deleted")),
+        ),
+      )
+      expect(empty.output).toBe("No loops")
       yield* Scope.close(scope, Exit.void)
     }),
   { config: cfg },

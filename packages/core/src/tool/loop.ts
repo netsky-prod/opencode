@@ -124,7 +124,7 @@ const layer = Layer.effectDiscard(
           toModelOutput,
           execute: (input, context) =>
             Effect.gen(function* () {
-              yield* permission.assert({
+              yield* (context.permission ?? permission).assert({
                 action: "loop",
                 resources: ["new"],
                 save: ["*"],
@@ -162,7 +162,7 @@ const layer = Layer.effectDiscard(
           toModelOutput,
           execute: (input, context) =>
             Effect.gen(function* () {
-              yield* permission.assert({
+              yield* (context.permission ?? permission).assert({
                 action: "loop",
                 resources: [input.id],
                 save: ["*"],
@@ -191,7 +191,7 @@ const layer = Layer.effectDiscard(
           toModelOutput,
           execute: (input, context) =>
             Effect.gen(function* () {
-              yield* permission.assert({
+              yield* (context.permission ?? permission).assert({
                 action: "loop",
                 resources: [input.id],
                 save: ["*"],
@@ -227,7 +227,7 @@ const layer = Layer.effectDiscard(
           toModelOutput,
           execute: (input, context) =>
             Effect.gen(function* () {
-              yield* permission.assert({
+              yield* (context.permission ?? permission).assert({
                 action: "loop",
                 resources: [input.id],
                 save: ["*"],
@@ -250,7 +250,7 @@ const layer = Layer.effectDiscard(
           toModelOutput,
           execute: (input, context) =>
             Effect.gen(function* () {
-              yield* permission.assert({
+              yield* (context.permission ?? permission).assert({
                 action: "loop",
                 resources: [input.id],
                 save: ["*"],
