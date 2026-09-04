@@ -1,6 +1,7 @@
 import { describe, expect } from "bun:test"
 import { Effect, Layer } from "effect"
 import { Database } from "@opencode-ai/core/database/database"
+import { CapabilityState } from "@opencode-ai/core/capability/state"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { EventV2 } from "@opencode-ai/core/event"
@@ -46,6 +47,7 @@ const it = testEffect(
       TodoWriteTool.node,
     ]),
     [
+      [CapabilityState.node, Layer.mock(CapabilityState.Service, { list: () => Effect.succeed([]) })],
       [PermissionV2.node, permission],
       [ToolOutputStore.node, ToolOutputStore.nodeWithoutConfig],
     ],

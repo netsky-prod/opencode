@@ -3,7 +3,10 @@ export * as SkillGuidance from "./guidance"
 import { makeLocationNode } from "../effect/app-node"
 import { Context, Effect, Layer, Schema } from "effect"
 import { AgentV2 } from "../agent"
+import { CapabilityCatalog } from "../capability/catalog"
+import { CapabilityState } from "../capability/state"
 import { PermissionV2 } from "../permission"
+import { SessionSchema } from "../session/schema"
 import { SkillV2 } from "../skill"
 import { SystemContext } from "../system-context/index"
 
@@ -32,7 +35,7 @@ const render = (skills: ReadonlyArray<Summary>) =>
   ].join("\n")
 
 export interface Interface {
-  readonly load: (agent: AgentV2.Selection) => Effect.Effect<SystemContext.SystemContext>
+  readonly load: (sessionID: SessionSchema.ID, agent: AgentV2.Selection) => Effect.Effect<SystemContext.SystemContext>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/v2/SkillGuidance") {}
@@ -41,12 +44,14 @@ const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const skills = yield* SkillV2.Service
+    const capabilities = yield* CapabilityState.Service
+    const catalog = yield* CapabilityCatalog.Service
 
     return Service.of({
-      load: Effect.fn("SkillGuidance.load")(function* (selection) {
+      load: Effect.fn("SkillGuidance.load")(function* (sessionID, selection) {
         const agent = selection.info
         if (!agent) return SystemContext.empty
-        const permitted = SkillV2.available(yield* skills.list(), agent)
+        const permitted = SkillV2.available(yield* listForSession({ sessionID, skills, capabilities, catalog }), agent)
         if (permitted.length === 0 && PermissionV2.evaluate("skill", "*", agent.permissions).effect === "deny")
           return SystemContext.empty
         const available = permitted
@@ -73,4 +78,40 @@ const layer = Layer.effect(
 
 export const locationLayer = layer
 
-export const node = makeLocationNode({ service: Service, layer, deps: [SkillV2.node] })
+export const node = makeLocationNode({
+  service: Service,
+  layer,
+  deps: [SkillV2.node, CapabilityState.node, CapabilityCatalog.node],
+})
+
+export const listForSession = Effect.fn("SkillGuidance.listForSession")(function* (input: {
+  readonly sessionID: SessionSchema.ID
+  readonly skills: SkillV2.Interface
+  readonly capabilities: CapabilityState.Interface
+  readonly catalog: CapabilityCatalog.Interface
+}) {
+  const available = new Map((yield* input.skills.list()).map((skill) => [skill.name, skill]))
+  const activations = yield* input.capabilities.list(input.sessionID)
+  for (const activation of activations) {
+    const pack = yield* input.catalog.get(activation.id)
+    if (!pack) continue
+    const selected = new Set(
+      activation.profiles.flatMap(
+        (profile) => Object.entries(pack.profiles).find(([id]) => id === profile)?.[1].skills ?? [],
+      ),
+    )
+    for (const skill of pack.skills) {
+      if (!selected.has(skill.name) || skill.content === undefined || available.has(skill.name)) continue
+      available.set(
+        skill.name,
+        SkillV2.Info.make({
+          name: skill.name,
+          description: skill.description,
+          location: skill.location,
+          content: skill.content,
+        }),
+      )
+    }
+  }
+  return Array.from(available.values())
+})

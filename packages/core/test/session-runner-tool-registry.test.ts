@@ -1,9 +1,11 @@
 import { describe, expect } from "bun:test"
 import { Tool } from "@opencode-ai/core/tool/tool"
 import { AgentV2 } from "@opencode-ai/core/agent"
+import { CapabilityState } from "@opencode-ai/core/capability/state"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { ApplicationTools } from "@opencode-ai/core/tool/application-tools"
+import { PermissionV2 } from "@opencode-ai/core/permission"
 import { SessionV2 } from "@opencode-ai/core/session"
 import { SessionMessage } from "@opencode-ai/core/session/message"
 import { ToolOutputStore } from "@opencode-ai/core/tool-output-store"
@@ -29,10 +31,15 @@ const outputStore = Layer.mock(ToolOutputStore.Service, {
     )
   },
 })
-const registryLayer = AppNodeBuilder.build(ToolRegistry.node, [[ToolOutputStore.node, outputStore]])
+const capabilityState = Layer.mock(CapabilityState.Service, { list: () => Effect.succeed([]) })
+const registryLayer = AppNodeBuilder.build(ToolRegistry.node, [
+  [CapabilityState.node, capabilityState],
+  [ToolOutputStore.node, outputStore],
+])
 const it = testEffect(registryLayer)
 const integrated = testEffect(
   AppNodeBuilder.build(LayerNode.group([ApplicationTools.node, ToolRegistry.node]), [
+    [CapabilityState.node, capabilityState],
     [ToolOutputStore.node, outputStore],
   ]),
 )
@@ -69,7 +76,7 @@ describe("ToolRegistry", () => {
         write: make("edit"),
         apply_patch: make("edit"),
       })
-      const names = (rules: Parameters<ToolRegistry.Interface["materialize"]>[0]) =>
+      const names = (rules: PermissionV2.Ruleset) =>
         toolDefinitions(service, rules).pipe(Effect.map((definitions) => definitions.map((tool) => tool.name)))
 
       expect(yield* names([{ action: "question", resource: "*", effect: "deny" }])).toEqual([
@@ -189,7 +196,7 @@ describe("ToolRegistry", () => {
         }),
       })
       expect(
-        yield* service.materialize().pipe(
+        yield* service.materialize(sessionID).pipe(
           Effect.flatMap((materialized) =>
             materialized.settle({
               sessionID,
@@ -207,7 +214,7 @@ describe("ToolRegistry", () => {
     Effect.gen(function* () {
       const service = yield* ToolRegistry.Service
       yield* service.register({ echo: make() })
-      const materialized = yield* service.materialize()
+      const materialized = yield* service.materialize(sessionID)
       const exit = yield* materialized.settle(call("echo", "call-retention-failure")).pipe(Effect.exit)
 
       expect(Exit.isFailure(exit)).toBe(true)
@@ -337,7 +344,7 @@ describe("ToolRegistry", () => {
     Effect.gen(function* () {
       const service = yield* ToolRegistry.Service
       yield* service.register({ echo: make() })
-      const materialized = yield* service.materialize()
+      const materialized = yield* service.materialize(sessionID)
 
       expect((yield* materialized.settle(call("echo"))).result).toEqual({ type: "text", value: "echo" })
     }),
@@ -348,7 +355,7 @@ describe("ToolRegistry", () => {
       const service = yield* ToolRegistry.Service
       const scope = yield* Scope.make()
       yield* service.register({ echo: make() }).pipe(Scope.provide(scope))
-      const materialized = yield* service.materialize()
+      const materialized = yield* service.materialize(sessionID)
       yield* Scope.close(scope, Exit.void)
 
       expect((yield* materialized.settle(call("echo"))).result).toEqual({
@@ -362,7 +369,7 @@ describe("ToolRegistry", () => {
     Effect.gen(function* () {
       const service = yield* ToolRegistry.Service
       yield* service.register({ first: make(), second: make() })
-      const materialized = yield* service.materialize()
+      const materialized = yield* service.materialize(sessionID)
       yield* service.register({ first: make() })
 
       expect((yield* materialized.settle(call("first"))).result).toEqual({
@@ -379,7 +386,7 @@ describe("ToolRegistry", () => {
       yield* service.register({ echo: make() })
       const overlay = yield* Scope.make()
       yield* service.register({ echo: make() }).pipe(Scope.provide(overlay))
-      const materialized = yield* service.materialize()
+      const materialized = yield* service.materialize(sessionID)
       yield* Scope.close(overlay, Exit.void)
 
       expect((yield* materialized.settle(call("echo"))).result).toEqual({
@@ -394,7 +401,7 @@ describe("ToolRegistry", () => {
       const applications = yield* ApplicationTools.Service
       const service = yield* ToolRegistry.Service
       yield* applications.register({ echo: make() })
-      const materialized = yield* service.materialize()
+      const materialized = yield* service.materialize(sessionID)
       yield* service.register({ echo: make() })
 
       expect((yield* materialized.settle(call("echo"))).result).toEqual({
@@ -411,7 +418,7 @@ describe("ToolRegistry", () => {
       yield* applications.register({ echo: make() })
       const scope = yield* Scope.make()
       yield* service.register({ echo: make() }).pipe(Scope.provide(scope))
-      const materialized = yield* service.materialize()
+      const materialized = yield* service.materialize(sessionID)
       yield* Scope.close(scope, Exit.void)
 
       expect((yield* materialized.settle(call("echo"))).result).toEqual({
@@ -439,7 +446,7 @@ describe("ToolRegistry", () => {
           }),
         })
         .pipe(Scope.provide(scope))
-      const materialized = yield* service.materialize()
+      const materialized = yield* service.materialize(sessionID)
       const settlement = yield* materialized.settle(call("echo")).pipe(Effect.forkChild)
       yield* Deferred.await(started)
       yield* Scope.close(scope, Exit.void)

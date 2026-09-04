@@ -62,9 +62,25 @@ type Config<
 
 type Runtime = {
   readonly permission?: string
+  readonly origin?: Origin
   readonly definition: (name: string) => ToolDefinition
   readonly settle: (call: ToolCall, context: Context) => Effect.Effect<ToolOutput, ToolFailure>
 }
+
+export type Origin =
+  | { readonly type: "builtin" }
+  | {
+      readonly type: "plugin"
+      readonly pluginID: string
+      readonly capability?: string
+      readonly profile?: string
+    }
+  | {
+      readonly type: "mcp"
+      readonly serverID: string
+      readonly capability?: string
+      readonly profile?: string
+    }
 
 const runtimes = new WeakMap<AnyTool, Runtime>()
 
@@ -145,7 +161,17 @@ export const withPermission = <Input extends SchemaType<any>, Output extends Sch
   return decorated
 }
 
+export const withOrigin = <Input extends SchemaType<unknown>, Output extends SchemaType<unknown>>(
+  tool: Definition<Input, Output>,
+  origin: Origin,
+) => {
+  const decorated = Object.freeze({}) as Definition<Input, Output>
+  runtimes.set(decorated, { ...runtimeOf(tool), origin: Object.freeze({ ...origin }) })
+  return decorated
+}
+
 export const permission = (tool: AnyTool, name: string) => runtimeOf(tool).permission ?? name
+export const origin = (tool: AnyTool) => runtimeOf(tool).origin
 export const definition = (name: string, tool: AnyTool) => runtimeOf(tool).definition(name)
 export const settle = (tool: AnyTool, call: ToolCall, context: Context) => runtimeOf(tool).settle(call, context)
 

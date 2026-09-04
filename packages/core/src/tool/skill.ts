@@ -6,6 +6,9 @@ import { Effect, Layer, Schema } from "effect"
 import { makeLocationNode } from "../effect/app-node"
 import { FSUtil } from "../fs-util"
 import { SkillV2 } from "../skill"
+import { SkillGuidance } from "../skill/guidance"
+import { CapabilityCatalog } from "../capability/catalog"
+import { CapabilityState } from "../capability/state"
 import { PermissionV2 } from "../permission"
 import { ToolRegistry } from "./registry"
 import { Tool } from "./tool"
@@ -59,6 +62,8 @@ const layer = Layer.effectDiscard(
     const tools = yield* Tools.Service
     const fs = yield* FSUtil.Service
     const skills = yield* SkillV2.Service
+    const capabilities = yield* CapabilityState.Service
+    const catalog = yield* CapabilityCatalog.Service
     const permission = yield* PermissionV2.Service
     yield* tools
       .register({
@@ -69,7 +74,12 @@ const layer = Layer.effectDiscard(
           toModelOutput: ({ output }) => [{ type: "text", text: output.output }],
           execute: (input, context) =>
             Effect.gen(function* () {
-              const current = yield* skills.list()
+              const current = yield* SkillGuidance.listForSession({
+                sessionID: context.sessionID,
+                skills,
+                capabilities,
+                catalog,
+              })
               const skill = current.find((skill) => skill.name === input.name)
               if (!skill) return yield* unableToLoad(input.name)
               return yield* Effect.gen(function* () {
@@ -105,5 +115,5 @@ const layer = Layer.effectDiscard(
 export const node = makeLocationNode({
   name: "tool/skill",
   layer,
-  deps: [ToolRegistry.node, FSUtil.node, SkillV2.node, PermissionV2.node],
+  deps: [ToolRegistry.node, FSUtil.node, SkillV2.node, PermissionV2.node, CapabilityState.node, CapabilityCatalog.node],
 })

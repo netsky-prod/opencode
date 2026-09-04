@@ -3,6 +3,8 @@ import path from "path"
 import { describe, expect } from "bun:test"
 import { Effect, Layer } from "effect"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
+import { CapabilityCatalog } from "@opencode-ai/core/capability/catalog"
+import { CapabilityState } from "@opencode-ai/core/capability/state"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { PermissionV2 } from "@opencode-ai/core/permission"
 import { AbsolutePath } from "@opencode-ai/core/schema"
@@ -68,6 +70,8 @@ describe("SkillTool", () => {
           const skillToolLayer = AppNodeBuilder.build(
             LayerNode.group([ToolRegistry.node, ToolRegistry.toolsNode, SkillTool.node]),
             [
+              [CapabilityCatalog.node, Layer.mock(CapabilityCatalog.Service, { get: () => Effect.succeed(undefined) })],
+              [CapabilityState.node, Layer.mock(CapabilityState.Service, { list: () => Effect.succeed([]) })],
               [PermissionV2.node, permission],
               [SkillV2.node, skills],
               [ToolOutputStore.node, ToolOutputStore.nodeWithoutConfig],

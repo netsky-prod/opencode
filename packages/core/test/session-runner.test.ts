@@ -193,7 +193,7 @@ const systemContext = Layer.effectDiscard(
   ),
 ).pipe(Layer.provideMerge(AppNodeBuilder.build(SystemContextRegistry.node)))
 const skillGuidance = Layer.mock(SkillGuidance.Service, {
-  load: (agent) =>
+  load: (_sessionID, agent) =>
     Effect.succeed(
       skillBaselines.has(agent.id)
         ? SystemContext.make({

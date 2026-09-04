@@ -6,15 +6,17 @@ import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { SessionV2 } from "@opencode-ai/core/session"
 import { SessionMessage } from "@opencode-ai/core/session/message"
 import { AgentV2 } from "@opencode-ai/core/agent"
+import { CapabilityState } from "@opencode-ai/core/capability/state"
 import { ToolRegistry } from "@opencode-ai/core/tool/registry"
 import { executeTool, settleTool, toolDefinitions } from "./lib/tool"
 import { ToolOutputStore } from "@opencode-ai/core/tool-output-store"
 import { Tools } from "@opencode-ai/core/tool/tools"
-import { Deferred, Effect, Exit, Fiber, Schema, Scope } from "effect"
+import { Deferred, Effect, Exit, Fiber, Layer, Schema, Scope } from "effect"
 import { testEffect } from "./lib/effect"
 
 const it = testEffect(
   AppNodeBuilder.build(LayerNode.group([ApplicationTools.node, ToolRegistry.node, ToolRegistry.toolsNode]), [
+    [CapabilityState.node, Layer.mock(CapabilityState.Service, { list: () => Effect.succeed([]) })],
     [ToolOutputStore.node, ToolOutputStore.nodeWithoutConfig],
   ]),
 )

@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, test } from "bun:test"
 import { Effect, Layer, Schema } from "effect"
 import { HttpClient, HttpClientResponse } from "effect/unstable/http"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
+import { CapabilityState } from "@opencode-ai/core/capability/state"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { LayerNodePlatform } from "@opencode-ai/core/effect/app-node-platform"
 import { PermissionV2 } from "@opencode-ai/core/permission"
@@ -127,6 +128,7 @@ const it = testEffect(
   AppNodeBuilder.build(
     LayerNode.group([ToolRegistry.node, ToolRegistry.toolsNode, WebSearchTool.configNode, WebSearchTool.node]),
     [
+      [CapabilityState.node, Layer.mock(CapabilityState.Service, { list: () => Effect.succeed([]) })],
       [PermissionV2.node, permission],
       [LayerNodePlatform.httpClient, http],
       [WebSearchTool.configNode, websearchConfig],

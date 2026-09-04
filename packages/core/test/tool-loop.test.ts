@@ -1,6 +1,7 @@
 import { describe, expect } from "bun:test"
 import { Effect, Layer } from "effect"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
+import { CapabilityState } from "@opencode-ai/core/capability/state"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Database } from "@opencode-ai/core/database/database"
 import { PermissionV2 } from "@opencode-ai/core/permission"
@@ -40,6 +41,7 @@ const it = testEffect(
   AppNodeBuilder.build(
     LayerNode.group([Database.node, SessionLoop.node, ToolRegistry.node, ToolRegistry.toolsNode, LoopTool.node]),
     [
+      [CapabilityState.node, Layer.mock(CapabilityState.Service, { list: () => Effect.succeed([]) })],
       [PermissionV2.node, permission],
       [ToolOutputStore.node, ToolOutputStore.nodeWithoutConfig],
     ],
