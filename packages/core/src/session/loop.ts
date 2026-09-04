@@ -4,6 +4,7 @@ import { and, asc, eq, isNull, lte, or, sql } from "drizzle-orm"
 import { Context, DateTime, Effect, Layer, Schema } from "effect"
 import { Database } from "../database/database"
 import { makeGlobalNode } from "../effect/app-node"
+import { KeyedMutex } from "../effect/keyed-mutex"
 import { Identifier } from "../id/id"
 import { SessionInput } from "./input"
 import { SessionMessage } from "./message"
@@ -216,6 +217,9 @@ const normalizeCheckpoint = (
     ) {
       throw new CheckpointDiagnostic({ message: "checkpoint exceeds 50 items" })
     }
+    if ((patch.verifiedFacts ?? []).flatMap((fact) => fact.evidence ?? []).length > 100) {
+      throw new CheckpointDiagnostic({ message: "checkpoint exceeds 100 evidence URLs" })
+    }
     const checkpoint: Checkpoint = {
       objective: patch.objective === undefined ? base.objective : normalizeString(patch.objective, "objective", false),
       acceptanceCriteria:
@@ -278,9 +282,6 @@ const normalizeCheckpoint = (
     if (checkpoint.verifiedFacts.length > 50 || checkpoint.inferences.length > 50 || checkpoint.decisions.length > 50) {
       throw new CheckpointDiagnostic({ message: "checkpoint exceeds 50 items" })
     }
-    const evidence = checkpoint.verifiedFacts.flatMap((fact) => fact.evidence ?? [])
-    if (new Set(evidence).size > 100)
-      throw new CheckpointDiagnostic({ message: "checkpoint exceeds 100 evidence URLs" })
     if (new TextEncoder().encode(JSON.stringify(checkpoint)).length > 128 * 1024) {
       throw new CheckpointDiagnostic({ message: "checkpoint exceeds 128 KiB" })
     }
@@ -294,29 +295,78 @@ const normalizeCheckpoint = (
 const decodeCheckpoint = (value: string | null): Pick<Info, "checkpoint" | "checkpointDiagnostic"> => {
   if (value === null) return {}
   try {
-    const checkpoint = JSON.parse(value) as Checkpoint
-    if (
-      typeof checkpoint !== "object" ||
-      checkpoint === null ||
-      typeof checkpoint.objective !== "string" ||
-      !Array.isArray(checkpoint.acceptanceCriteria) ||
-      !Array.isArray(checkpoint.verifiedFacts) ||
-      !Array.isArray(checkpoint.observations) ||
-      !Array.isArray(checkpoint.inferences) ||
-      !Array.isArray(checkpoint.assumptions) ||
-      !Array.isArray(checkpoint.decisions) ||
-      !Array.isArray(checkpoint.blockers) ||
-      !Array.isArray(checkpoint.artifacts) ||
-      typeof checkpoint.nextAction !== "string" ||
-      !Number.isSafeInteger(checkpoint.updatedAt)
-    ) {
-      throw new Error("invalid checkpoint")
-    }
-    normalizeCheckpoint(undefined, checkpoint, checkpoint.updatedAt)
-    return { checkpoint }
+    const checkpoint = checkpointFromUnknown(JSON.parse(value))
+    return { checkpoint: normalizeCheckpoint(undefined, checkpoint, checkpoint.updatedAt) }
   } catch {
     return { checkpointDiagnostic: new CheckpointDiagnostic({ message: "Stored loop checkpoint is invalid" }) }
   }
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null
+
+const hasKeys = (value: Record<string, unknown>, keys: ReadonlyArray<string>) =>
+  Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key))
+
+const strings = (value: unknown): value is string[] =>
+  Array.isArray(value) && value.every((item) => typeof item === "string")
+
+const checkpointFromUnknown = (value: unknown): Checkpoint => {
+  if (
+    !isRecord(value) ||
+    !hasKeys(value, [
+      "objective",
+      "acceptanceCriteria",
+      "verifiedFacts",
+      "observations",
+      "inferences",
+      "assumptions",
+      "decisions",
+      "blockers",
+      "artifacts",
+      "nextAction",
+      "updatedAt",
+    ]) ||
+    typeof value.objective !== "string" ||
+    !strings(value.acceptanceCriteria) ||
+    !Array.isArray(value.verifiedFacts) ||
+    !strings(value.observations) ||
+    !Array.isArray(value.inferences) ||
+    !strings(value.assumptions) ||
+    !Array.isArray(value.decisions) ||
+    !strings(value.blockers) ||
+    !strings(value.artifacts) ||
+    typeof value.nextAction !== "string" ||
+    !Number.isSafeInteger(value.updatedAt)
+  ) {
+    throw new Error("invalid checkpoint")
+  }
+  if (
+    value.verifiedFacts.some(
+      (fact) =>
+        !isRecord(fact) ||
+        !Object.keys(fact).every((key) => key === "claim" || key === "evidence") ||
+        !Object.hasOwn(fact, "claim") ||
+        typeof fact.claim !== "string" ||
+        (fact.evidence !== undefined && !strings(fact.evidence)),
+    ) ||
+    value.inferences.some(
+      (inference) =>
+        !isRecord(inference) ||
+        !hasKeys(inference, ["claim", "confidence"]) ||
+        typeof inference.claim !== "string" ||
+        !["low", "medium", "high"].includes(inference.confidence as string),
+    ) ||
+    value.decisions.some(
+      (decision) =>
+        !isRecord(decision) ||
+        !hasKeys(decision, ["decision", "reason"]) ||
+        typeof decision.decision !== "string" ||
+        typeof decision.reason !== "string",
+    )
+  ) {
+    throw new Error("invalid checkpoint")
+  }
+  return value as Checkpoint
 }
 
 const now = (input?: number) =>
@@ -349,6 +399,7 @@ const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const { db } = yield* Database.Service
+    const locks = KeyedMutex.makeUnsafe<ID>()
 
     const owned = Effect.fn("SessionLoop.owned")(function* (input: OwnedInput) {
       const row = yield* db
@@ -423,9 +474,10 @@ const layer = Layer.effect(
       return rows.map(fromRow)
     })
 
-    const update = Effect.fn("SessionLoop.update")(function* (input: UpdateInput) {
+    const updateUnlocked = Effect.fn("SessionLoop.update")(function* (input: UpdateInput) {
       const currentRow = yield* owned(input)
       const current = fromRow(currentRow)
+      yield* Effect.yieldNow
       const timestamp = yield* now(input.now)
       const prompt = input.prompt === undefined ? current.prompt : yield* normalizePrompt(input.prompt)
       const intervalMs = input.intervalMs ?? current.intervalMs
@@ -457,7 +509,7 @@ const layer = Layer.effect(
                 }),
             })
       if (state === "completed" && current.mode === "adaptive") {
-        if (input.reason === undefined || reason === undefined) {
+        if (input.reason === undefined || reason === null) {
           return yield* Effect.fail(new InvalidInput({ message: "Adaptive completion requires a reason" }))
         }
         if (input.checkpoint === undefined || checkpoint === undefined) {
@@ -496,6 +548,8 @@ const layer = Layer.effect(
       if (!row) return yield* Effect.fail(new NotFound({ sessionID: input.sessionID, id: input.id }))
       return fromRow(row)
     })
+
+    const update = (input: UpdateInput) => locks.withLock(input.id)(updateUnlocked(input))
 
     const checkpoint = Effect.fn("SessionLoop.checkpoint")(function* (input: CheckpointInput) {
       return yield* update(input)

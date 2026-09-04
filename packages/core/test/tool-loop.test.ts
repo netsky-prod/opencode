@@ -226,4 +226,28 @@ describe("LoopTool", () => {
       })
     }),
   )
+
+  it.effect("rejects blank adaptive completion reasons through checkpoint and wakeup tools", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const registry = yield* ToolRegistry.Service
+      const loops = yield* SessionLoop.Service
+      const loop = yield* loops.create({ sessionID, prompt: "ship", mode: "adaptive", now: 1_000 })
+      const checkpoint = {
+        acceptanceCriteria: ["CI is green"],
+        verifiedFacts: [{ claim: "CI is green", evidence: ["https://example.com/ci"] }],
+      }
+
+      expect(
+        yield* executeTool(
+          registry,
+          call("loop_checkpoint", { id: loop.id, state: "completed", reason: " ", ...checkpoint }),
+        ),
+      ).toEqual({ type: "error", value: "Unable to update loop checkpoint" })
+      expect(
+        yield* executeTool(registry, call("loop_wakeup", { id: loop.id, action: "complete", reason: " ", checkpoint })),
+      ).toMatchObject({ type: "error", value: expect.stringContaining("Invalid tool input") })
+      expect((yield* loops.get({ sessionID, id: loop.id })).state).toBe("active")
+    }),
+  )
 })

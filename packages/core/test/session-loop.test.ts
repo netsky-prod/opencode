@@ -1,4 +1,5 @@
-import { describe, expect } from "bun:test"
+import path from "path"
+import { describe, expect, test } from "bun:test"
 import { asc, eq } from "drizzle-orm"
 import { Effect } from "effect"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
@@ -11,6 +12,7 @@ import { SessionV2 } from "@opencode-ai/core/session"
 import { SessionLoop } from "@opencode-ai/core/session/loop"
 import { SessionInputTable, SessionLoopTable, SessionTable } from "@opencode-ai/core/session/sql"
 import { testEffect } from "./lib/effect"
+import { tmpdir } from "./fixture/tmpdir"
 
 const it = testEffect(AppNodeBuilder.build(LayerNode.group([Database.node, SessionLoop.node])))
 const sessionID = SessionV2.ID.make("ses_loop_test")
@@ -358,6 +360,122 @@ describe("SessionLoop", () => {
     }),
   )
 
+  it.effect("rejects every blank adaptive completion reason and repeated evidence beyond the total limit", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const loops = yield* SessionLoop.Service
+      const loop = yield* loops.create({ sessionID, prompt: "ship", mode: "adaptive", now: 1_000 })
+      const checkpoint = {
+        acceptanceCriteria: ["CI is green"],
+        verifiedFacts: [{ claim: "CI is green", evidence: ["https://example.com/ci"] }],
+      }
+
+      for (const reason of [undefined, null, "", "   "]) {
+        expect(
+          yield* Effect.flip(
+            loops.checkpoint({ sessionID, id: loop.id, checkpoint, state: "completed", reason, now: 2_000 }),
+          ),
+        ).toMatchObject({ _tag: "SessionLoop.InvalidInput", message: expect.stringContaining("reason") })
+      }
+      expect(
+        yield* Effect.flip(
+          loops.checkpoint({
+            sessionID,
+            id: loop.id,
+            checkpoint: {
+              verifiedFacts: Array.from({ length: 3 }, () => ({
+                claim: "repeated",
+                evidence: Array.from({ length: 50 }, () => "https://example.com/a"),
+              })),
+            },
+            now: 2_000,
+          }),
+        ),
+      ).toMatchObject({ _tag: "SessionLoop.InvalidInput", message: expect.stringContaining("100 evidence") })
+    }),
+  )
+
+  it.effect("omits stored checkpoints with invalid runtime shape and canonicalizes validated storage", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const { db } = yield* Database.Service
+      const loops = yield* SessionLoop.Service
+      const loop = yield* loops.create({ sessionID, prompt: "ship", mode: "adaptive", now: 1_000 })
+      const stored = {
+        objective: " Ship ",
+        acceptanceCriteria: [],
+        verifiedFacts: [],
+        observations: [" seen ", "seen"],
+        inferences: [{ claim: "likely", confidence: "medium" }],
+        assumptions: [],
+        decisions: [],
+        blockers: [],
+        artifacts: [],
+        nextAction: " verify ",
+        updatedAt: 2_000,
+      }
+      yield* db
+        .update(SessionLoopTable)
+        .set({ checkpoint_json: JSON.stringify(stored) })
+        .where(eq(SessionLoopTable.id, loop.id))
+        .run()
+        .pipe(Effect.orDie)
+
+      expect((yield* loops.get({ sessionID, id: loop.id })).checkpoint).toMatchObject({
+        objective: "Ship",
+        observations: ["seen"],
+        nextAction: "verify",
+      })
+
+      yield* db
+        .update(SessionLoopTable)
+        .set({
+          checkpoint_json: JSON.stringify({
+            ...stored,
+            inferences: [{ claim: "likely", confidence: "certain" }],
+            unexpected: true,
+          }),
+        })
+        .where(eq(SessionLoopTable.id, loop.id))
+        .run()
+        .pipe(Effect.orDie)
+      const invalid = yield* loops.get({ sessionID, id: loop.id })
+      expect(invalid.checkpoint).toBeUndefined()
+      expect(invalid.checkpointDiagnostic).toBeInstanceOf(SessionLoop.CheckpointDiagnostic)
+    }),
+  )
+
+  it.effect("serializes concurrent checkpoint patches and state updates without restoring stale loop state", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const loops = yield* SessionLoop.Service
+      const loop = yield* loops.create({
+        sessionID,
+        prompt: "ship",
+        mode: "adaptive",
+        checkpoint: { objective: "Ship" },
+        now: 1_000,
+      })
+
+      yield* Effect.all(
+        [
+          loops.checkpoint({ sessionID, id: loop.id, checkpoint: { observations: ["verified"] }, now: 2_000 }),
+          loops.checkpoint({ sessionID, id: loop.id, checkpoint: { blockers: ["waiting"] }, now: 2_000 }),
+          loops.update({ sessionID, id: loop.id, state: "paused", reason: "waiting", now: 2_001 }),
+        ],
+        { concurrency: "unbounded" },
+      )
+
+      const stored = yield* loops.get({ sessionID, id: loop.id })
+      expect(stored).toMatchObject({
+        state: "paused",
+        reason: "waiting",
+        checkpoint: { objective: "Ship", observations: ["verified"], blockers: ["waiting"] },
+      })
+      expect(stored.nextRunAt).toBeUndefined()
+    }),
+  )
+
   it.effect("allows only one concurrent claimant", () =>
     Effect.gen(function* () {
       yield* setup
@@ -371,4 +489,34 @@ describe("SessionLoop", () => {
       expect(claims.flat()[0]?.messageID.startsWith("msg_")).toBe(true)
     }),
   )
+})
+
+test("SessionLoop checkpoints survive a database and service restart", async () => {
+  await using temporary = await tmpdir()
+  const filename = path.join(temporary.path, "loops.sqlite")
+  const layer = () =>
+    AppNodeBuilder.build(LayerNode.group([Database.node, SessionLoop.node]), [
+      [Database.node, Database.layerFromPath(filename)],
+    ])
+  const loop = await Effect.runPromise(
+    Effect.gen(function* () {
+      yield* setup
+      const loops = yield* SessionLoop.Service
+      return yield* loops.create({
+        sessionID,
+        prompt: "ship",
+        mode: "adaptive",
+        checkpoint: { objective: "Ship", observations: ["saved"], nextAction: "verify" },
+        now: 1_000,
+      })
+    }).pipe(Effect.provide(layer()), Effect.scoped),
+  )
+  const reopened = await Effect.runPromise(
+    Effect.gen(function* () {
+      const loops = yield* SessionLoop.Service
+      return yield* loops.get({ sessionID, id: loop.id })
+    }).pipe(Effect.provide(layer()), Effect.scoped),
+  )
+
+  expect(reopened.checkpoint).toMatchObject({ objective: "Ship", observations: ["saved"], nextAction: "verify" })
 })
