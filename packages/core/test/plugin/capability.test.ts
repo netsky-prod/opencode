@@ -54,6 +54,10 @@ describe("CapabilityPlugin.Plugin", () => {
 
           expect(browser?.skills.map((skill) => String(skill.name))).toEqual(["browser-testing"])
           expect(research?.skills.map((skill) => String(skill.name))).toEqual(["research"])
+          expect(String(browser?.skills[0]?.location)).toBe("/builtin/capabilities/browser/browser-testing.md")
+          expect(browser?.skills[0]?.content).toContain("Save a screenshot for the final verified state")
+          expect(String(research?.skills[0]?.location)).toBe("/builtin/capabilities/research/research.md")
+          expect(research?.skills[0]?.content).toContain("Fetch every decisive primary-source URL")
           expect(JSON.stringify(yield* catalog.list())).not.toContain("Bearer ")
         }),
       (temporary) => Effect.promise(() => temporary[Symbol.asyncDispose]()),

@@ -15,9 +15,21 @@ import researchContent from "./capability/research/research.md" with { type: "te
 export const BrowserTestingContent = browserTestingContent
 export const ResearchContent = researchContent
 
-const entries = [
-  { input: browserManifest, directory: path.join(import.meta.dir, "capability", "browser") },
-  { input: researchManifest, directory: path.join(import.meta.dir, "capability", "research") },
+const entries: ReadonlyArray<{
+  readonly input: unknown
+  readonly directory: string
+  readonly skills: Readonly<Record<string, string>>
+}> = [
+  {
+    input: browserManifest,
+    directory: path.join("/builtin", "capabilities", "browser"),
+    skills: { "browser-testing.md": browserTestingContent },
+  },
+  {
+    input: researchManifest,
+    directory: path.join("/builtin", "capabilities", "research"),
+    skills: { "research.md": researchContent },
+  },
 ]
 
 export const Plugin = define({
@@ -29,7 +41,9 @@ export const Plugin = define({
       (entry) =>
         CapabilityManifest.decode(entry.input).pipe(
           Effect.orDie,
-          Effect.flatMap((manifest) => catalog.register({ manifest, directory: entry.directory })),
+          Effect.flatMap((manifest) =>
+            catalog.register({ manifest, directory: entry.directory, skills: entry.skills }),
+          ),
         ),
       { discard: true },
     )

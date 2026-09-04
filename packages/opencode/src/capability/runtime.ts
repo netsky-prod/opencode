@@ -4,7 +4,7 @@ import { CapabilityManifest } from "@opencode-ai/core/capability/manifest"
 import { CapabilityRuntime as CoreCapabilityRuntime } from "@opencode-ai/core/capability/runtime"
 import { makeLocationNode } from "@opencode-ai/core/effect/app-node"
 import { ConfigMCPV1 } from "@opencode-ai/core/v1/config/mcp"
-import { Effect, Exit, Layer } from "effect"
+import { Cause, Effect, Exit, Layer } from "effect"
 import { MCP } from "@/mcp"
 import { McpCatalog } from "@/mcp/catalog"
 import { EffectBridge } from "@/effect/bridge"
@@ -43,66 +43,76 @@ const layer = Layer.effect(
             return Effect.gen(function* () {
               if (definition.type !== "mcp") throw new Error(`Unsupported capability runtime type: ${definition.type}`)
               if (runtimeID(key) !== definition.id) throw new Error(`Capability runtime key does not match: ${key}`)
+              const configured = yield* Effect.try({
+                try: () => mcpConfig(definition),
+                catch: (error) => (error instanceof Error ? error : new Error(String(error))),
+              })
               const lineage = `${packID(key)}\0${runtimeID(key)}`
               if (yield* mcp.connection(server)) throw new Error(`MCP server name is already registered: ${server}`)
               const existing = new Set(Object.keys(yield* mcp.tools()))
-              const added = yield* mcp.add(server, mcpConfig(definition), { hidden: true })
-              const owned = added.registration
-              registration = owned
-              const connection = "status" in added.status ? added.status : added.status[server]
-              if (connection?.status !== "connected") {
-                throw new Error(
-                  connection?.status === "failed"
-                    ? connection.error
-                    : `MCP server did not connect (${connection?.status ?? "unknown"})`,
+              return yield* Effect.gen(function* () {
+                const added = yield* mcp.add(server, configured.info, { hidden: true })
+                const owned = added.registration
+                registration = owned
+                const connection = isStatus(added.status) ? added.status : added.status[server]
+                if (connection?.status !== "connected") {
+                  throw new Error(
+                    connection?.status === "failed"
+                      ? connection.error
+                      : `MCP server did not connect (${connection?.status ?? "unknown"})`,
+                  )
+                }
+
+                const upstream = yield* mcp.definitions(server)
+                const names = upstream.map((definition) =>
+                  CapabilityManifest.canonicalName(
+                    packID(key),
+                    runtimeID(key),
+                    McpCatalog.sanitize(definition.upstreamName),
+                  ),
                 )
-              }
+                const collision = names.find(
+                  (name, index) =>
+                    names.indexOf(name) !== index ||
+                    existing.has(name) ||
+                    (owners.has(name) && owners.get(name)?.lineage !== lineage),
+                )
+                if (collision) {
+                  throw new Error(`Canonical tool name collision: ${collision}`)
+                }
+                for (const name of names) {
+                  const owner = owners.get(name)
+                  if (owner) owner.registrations.add(owned)
+                  else owners.set(name, { lineage, registrations: new Set([owned]) })
+                }
 
-              const upstream = yield* mcp.definitions(server)
-              const names = upstream.map((definition) =>
-                CapabilityManifest.canonicalName(
-                  packID(key),
-                  runtimeID(key),
-                  McpCatalog.sanitize(definition.upstreamName),
-                ),
-              )
-              const collision = names.find(
-                (name, index) =>
-                  names.indexOf(name) !== index ||
-                  existing.has(name) ||
-                  (owners.has(name) && owners.get(name)?.lineage !== lineage),
-              )
-              if (collision) {
-                throw new Error(`Canonical tool name collision: ${collision}`)
-              }
-              for (const name of names) {
-                const owner = owners.get(name)
-                if (owner) owner.registrations.add(owned)
-                else owners.set(name, { lineage, registrations: new Set([owned]) })
-              }
-
-              const definitions = Object.freeze(
-                upstream.map((definition, index) =>
-                  Object.freeze({
-                    name: names[index]!,
-                    description: definition.description,
-                    inputSchema: definition.inputSchema,
-                    call: definition.call,
+                const definitions = Object.freeze(
+                  upstream.map((definition, index) =>
+                    Object.freeze({
+                      name: names[index],
+                      description: definition.description,
+                      inputSchema: definition.inputSchema,
+                      call: definition.call,
+                    }),
+                  ),
+                )
+                const stop = bridge.run(
+                  Effect.gen(function* () {
+                    releaseOwnership(owned)
+                    yield* mcp.remove(owned).pipe(Effect.catchTag("MCP.NotFoundError", () => Effect.void))
                   }),
+                )
+
+                return {
+                  value: Object.freeze({ tools: definitions }),
+                  stop,
+                  exited: bridge.run(waitForExit(mcp, owned)),
+                }
+              }).pipe(
+                Effect.catchCause((cause) =>
+                  Effect.fail(new Error(redactResolved(Cause.pretty(cause), configured.sensitive))),
                 ),
               )
-              const stop = bridge.run(
-                Effect.gen(function* () {
-                  releaseOwnership(owned)
-                  yield* mcp.remove(owned).pipe(Effect.catchTag("MCP.NotFoundError", () => Effect.void))
-                }),
-              )
-
-              return {
-                value: Object.freeze({ tools: definitions }),
-                stop,
-                exited: bridge.run(waitForExit(mcp, owned)),
-              }
             }).pipe(Effect.onExit((exit) => (Exit.isFailure(exit) ? cleanup : Effect.void)))
           },
         })
@@ -128,23 +138,62 @@ export const node = makeLocationNode({
 
 export const adapterNode = node
 
-function mcpConfig(definition: CapabilityManifest.Runtime): ConfigMCPV1.Info {
-  const [command, ...args] = definition.command
+function mcpConfig(definition: CapabilityManifest.Runtime): {
+  readonly info: ConfigMCPV1.Info
+  readonly sensitive: ReadonlyArray<string>
+} {
+  const sensitive = new Set<string>()
+  const commandLine = definition.command.map((value) => resolveEnvironment(value, sensitive))
+  const environment = definition.environment
+    ? Object.fromEntries(
+        Object.entries(definition.environment).map(([name, value]) => [name, resolveEnvironment(value, sensitive)]),
+      )
+    : undefined
+  const [command, ...args] = commandLine
   if (!command) throw new Error(`Capability runtime command is empty: ${definition.id}`)
-  if (definition.command.length === 1 && URL.canParse(command)) {
+  if (commandLine.length === 1 && URL.canParse(command)) {
     return {
-      type: "remote",
-      url: command,
-      oauth: false,
-      timeout: definition.timeoutMs,
+      info: {
+        type: "remote",
+        url: command,
+        headers: environment,
+        oauth: false,
+        timeout: definition.timeoutMs,
+      },
+      sensitive: [...sensitive],
     }
   }
   return {
-    type: "local",
-    command: [command, ...args],
-    environment: definition.environment ? { ...definition.environment } : undefined,
-    timeout: definition.timeoutMs,
+    info: {
+      type: "local",
+      command: [command, ...args],
+      environment,
+      timeout: definition.timeoutMs,
+    },
+    sensitive: [...sensitive],
   }
+}
+
+const environmentReference = /^\$\{([A-Z_][A-Z0-9_]*)\}$/
+
+function resolveEnvironment(value: string, sensitive: Set<string>) {
+  const match = environmentReference.exec(value)
+  if (!match) return value
+  const name = match[1]
+  const resolved = process.env[name]
+  if (resolved === undefined || resolved === "") throw new Error(`Missing environment variable ${name}`)
+  sensitive.add(resolved)
+  return resolved
+}
+
+function redactResolved(message: string, sensitive: ReadonlyArray<string>) {
+  return sensitive
+    .toSorted((left, right) => right.length - left.length)
+    .reduce((result, value) => result.replaceAll(value, "[redacted]"), message)
+}
+
+function isStatus(status: Record<string, MCP.Status> | MCP.Status): status is MCP.Status {
+  return typeof status.status === "string"
 }
 
 function serverName(key: string) {

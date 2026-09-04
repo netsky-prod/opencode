@@ -39,7 +39,7 @@ const definition = (url: string, input: Partial<CapabilityManifest.Runtime> = {}
     ...input,
   })
 
-function serveMcp(tools: ReadonlyArray<Tool>, version = "called") {
+function serveMcp(tools: ReadonlyArray<Tool>, version = "called", authorization?: string) {
   return Effect.acquireRelease(
     Effect.promise(async () => {
       const protocol = new Server(
@@ -55,16 +55,42 @@ function serveMcp(tools: ReadonlyArray<Tool>, version = "called") {
         enableJsonResponse: true,
       })
       await protocol.connect(transport)
-      const http = Bun.serve({ port: 0, fetch: (request) => transport.handleRequest(request) })
+      const http = Bun.serve({
+        port: 0,
+        fetch: (request) =>
+          authorization && request.headers.get("authorization") !== authorization
+            ? new Response("Unauthorized", { status: 401 })
+            : transport.handleRequest(request),
+      })
       return {
         url: http.url.toString(),
         close: async () => {
           await protocol.close().catch(() => {})
-          http.stop(true)
+          void http.stop(true)
         },
       }
     }),
     (server) => Effect.promise(server.close),
+  )
+}
+
+function environment(values: Readonly<Record<string, string | undefined>>) {
+  return Effect.acquireRelease(
+    Effect.sync(() => {
+      const previous = Object.fromEntries(Object.keys(values).map((name) => [name, process.env[name]]))
+      for (const [name, value] of Object.entries(values)) {
+        if (value === undefined) delete process.env[name]
+        else process.env[name] = value
+      }
+      return previous
+    }),
+    (previous) =>
+      Effect.sync(() => {
+        for (const [name, value] of Object.entries(previous)) {
+          if (value === undefined) delete process.env[name]
+          else process.env[name] = value
+        }
+      }),
   )
 }
 
@@ -88,9 +114,87 @@ it.instance("starts a manifest-owned MCP and exposes immutable canonical definit
     expect(Object.keys(yield* mcp.status())).toEqual([])
     expect(Object.isFrozen(tools)).toBe(true)
     expect(Object.isFrozen(tools[0])).toBe(true)
-    expect(yield* tools[0]!.call({ url: "https://example.com" })).toMatchObject({
+    expect(yield* tools[0].call({ url: "https://example.com" })).toMatchObject({
       content: [{ type: "text", text: "called:navigate" }],
     })
+  }),
+)
+
+it.instance(
+  "resolves exact environment references before remote classification and maps remote environment to headers",
+  () =>
+    Effect.gen(function* () {
+      const secret = "Bearer capability-adapter-secret"
+      const server = yield* serveMcp([{ name: "search", inputSchema: { type: "object" } }], "resolved", secret)
+      yield* environment({
+        OPENCODE_TEST_CAPABILITY_MCP_URL: server.url,
+        OPENCODE_TEST_CAPABILITY_AUTHORIZATION: secret,
+      })
+      const runtime = yield* CoreCapabilityRuntime.Service
+      const reference = yield* runtime.acquire(
+        "research/federated",
+        CapabilityManifest.Runtime.make({
+          id: CapabilityManifest.ID.make("federated"),
+          type: "mcp",
+          command: ["${OPENCODE_TEST_CAPABILITY_MCP_URL}"],
+          environment: { Authorization: "${OPENCODE_TEST_CAPABILITY_AUTHORIZATION}" },
+          tools: [],
+          optional: false,
+          timeoutMs: 2_000,
+        }),
+      )
+
+      expect(CapabilityRuntime.tools(reference).map((tool) => tool.name)).toEqual(["research_federated_search"])
+      expect(yield* CapabilityRuntime.tools(reference)[0].call({})).toMatchObject({
+        content: [{ type: "text", text: "resolved:search" }],
+      })
+      expect(JSON.stringify(yield* runtime.status(reference.key))).not.toContain(secret)
+    }),
+)
+
+it.instance("fails with an actionable variable name when an exact environment reference is missing", () =>
+  Effect.gen(function* () {
+    yield* environment({ OPENCODE_TEST_CAPABILITY_MISSING_URL: undefined })
+    const runtime = yield* CoreCapabilityRuntime.Service
+    const error = yield* runtime
+      .acquire(
+        "research/missing",
+        CapabilityManifest.Runtime.make({
+          id: CapabilityManifest.ID.make("missing"),
+          type: "mcp",
+          command: ["${OPENCODE_TEST_CAPABILITY_MISSING_URL}"],
+          tools: [],
+          optional: false,
+          timeoutMs: 2_000,
+        }),
+      )
+      .pipe(Effect.flip)
+
+    expect(error.diagnostic).toBe("Missing environment variable OPENCODE_TEST_CAPABILITY_MISSING_URL")
+  }),
+)
+
+it.instance("redacts resolved environment values from startup failures", () =>
+  Effect.gen(function* () {
+    const secret = "opencode-secret-mcp-executable"
+    yield* environment({ OPENCODE_TEST_CAPABILITY_SECRET_COMMAND: secret })
+    const runtime = yield* CoreCapabilityRuntime.Service
+    const error = yield* runtime
+      .acquire(
+        "research/redaction",
+        CapabilityManifest.Runtime.make({
+          id: CapabilityManifest.ID.make("redaction"),
+          type: "mcp",
+          command: ["${OPENCODE_TEST_CAPABILITY_SECRET_COMMAND}", "--stdio"],
+          tools: [],
+          optional: false,
+          timeoutMs: 2_000,
+        }),
+      )
+      .pipe(Effect.flip)
+
+    expect(error.diagnostic).toContain("[redacted]")
+    expect(error.diagnostic).not.toContain(secret)
   }),
 )
 

@@ -133,6 +133,34 @@ describe("CapabilityCatalog", () => {
 
     expect(await Effect.runPromise(catalog.list())).toEqual([])
   })
+
+  test("loads embedded skill content without a source-tree directory", async () => {
+    await using tmp = await tmpdir()
+    const catalog = await Effect.runPromise(
+      CapabilityCatalog.make({
+        builtins: [
+          {
+            manifest: decode(browser),
+            directory: "/builtin/capabilities/browser",
+            skills: { "browser-testing.md": "# Embedded browser testing" },
+          },
+        ],
+        globalDirectory: path.join(tmp.path, "global"),
+        projectDirectory: path.join(tmp.path, "project"),
+      }),
+    )
+
+    expect(await Effect.runPromise(catalog.get("browser"))).toMatchObject({
+      source: "builtin",
+      directory: "/builtin/capabilities/browser",
+      skills: [
+        {
+          location: "/builtin/capabilities/browser/browser-testing.md",
+          content: "# Embedded browser testing",
+        },
+      ],
+    })
+  })
 })
 
 async function write(directory: string, manifest: unknown) {

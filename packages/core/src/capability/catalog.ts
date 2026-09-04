@@ -25,6 +25,7 @@ export type Pack = Omit<CapabilityManifest.Manifest, "skills"> & {
 export type Embedded = {
   readonly manifest: CapabilityManifest.Manifest
   readonly directory: string
+  readonly skills?: Readonly<Record<string, string>>
 }
 
 export type Options = {
@@ -92,7 +93,7 @@ const layer = Layer.effect(
 export const node = makeLocationNode({ service: Service, layer, deps: [Location.node] })
 
 async function loadEmbedded(entries: ReadonlyArray<Embedded>) {
-  return Promise.all(entries.map((entry) => loadPack(entry.manifest, entry.directory, "builtin")))
+  return Promise.all(entries.map((entry) => loadPack(entry.manifest, entry.directory, "builtin", entry.skills)))
 }
 
 async function loadDirectory(directory: string, source: Exclude<Source, "builtin">) {
@@ -117,7 +118,13 @@ async function loadDirectory(directory: string, source: Exclude<Source, "builtin
   ).filter((pack): pack is Pack => pack !== undefined)
 }
 
-async function loadPack(manifest: CapabilityManifest.Manifest, directory: string, source: Source): Promise<Pack> {
+async function loadPack(
+  manifest: CapabilityManifest.Manifest,
+  directory: string,
+  source: Source,
+  embeddedSkills?: Readonly<Record<string, string>>,
+): Promise<Pack> {
+  if (embeddedSkills) return loadEmbeddedPack(manifest, directory, embeddedSkills)
   const absoluteDirectory = await fs.realpath(directory)
   const skills = await Promise.all(
     manifest.skills.map(async (skill) => {
@@ -127,6 +134,22 @@ async function loadPack(manifest: CapabilityManifest.Manifest, directory: string
     }),
   )
   return freeze({ ...manifest, source, directory: AbsolutePath.make(absoluteDirectory), skills })
+}
+
+function loadEmbeddedPack(
+  manifest: CapabilityManifest.Manifest,
+  directory: string,
+  embeddedSkills: Readonly<Record<string, string>>,
+): Pack {
+  const absoluteDirectory = path.resolve(directory)
+  const skills = manifest.skills.map((skill) => {
+    const content = embeddedSkills[skill.path]
+    if (content === undefined) throw new Error(`Embedded skill content is missing: ${manifest.id}/${skill.path}`)
+    const location = path.resolve(absoluteDirectory, skill.path)
+    if (!contains(absoluteDirectory, location)) throw new Error(`Skill path escapes capability manifest: ${skill.path}`)
+    return freeze({ ...skill, location: AbsolutePath.make(location), content })
+  })
+  return freeze({ ...manifest, source: "builtin", directory: AbsolutePath.make(absoluteDirectory), skills })
 }
 
 function score(pack: Pack, query: string) {

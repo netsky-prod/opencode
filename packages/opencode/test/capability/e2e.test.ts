@@ -1,3 +1,5 @@
+import fs from "node:fs/promises"
+import { watch } from "node:fs"
 import path from "node:path"
 import { afterEach, describe, expect } from "bun:test"
 import { Server } from "@modelcontextprotocol/sdk/server/index.js"
@@ -5,23 +7,28 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import { CallToolRequestSchema, ListToolsRequestSchema, type Tool } from "@modelcontextprotocol/sdk/types.js"
 import { AgentV2 } from "@opencode-ai/core/agent"
 import { CapabilityCatalog } from "@opencode-ai/core/capability/catalog"
-import { CapabilityManifest } from "@opencode-ai/core/capability/manifest"
 import { CapabilityRuntime as CoreCapabilityRuntime } from "@opencode-ai/core/capability/runtime"
 import { CapabilityState } from "@opencode-ai/core/capability/state"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { Location } from "@opencode-ai/core/location"
+import { PluginV2 } from "@opencode-ai/core/plugin"
+import { PluginInternal } from "@opencode-ai/core/plugin/internal"
 import { AppProcess } from "@opencode-ai/core/process"
+import { Project } from "@opencode-ai/core/project"
 import { PermissionV2 } from "@opencode-ai/core/permission"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { SessionV2 } from "@opencode-ai/core/session"
 import { SessionMessage } from "@opencode-ai/core/session/message"
 import { SessionStore } from "@opencode-ai/core/session/store"
+import { SkillGuidance } from "@opencode-ai/core/skill/guidance"
 import { ApplicationTools } from "@opencode-ai/core/tool/application-tools"
 import { CapabilityTool } from "@opencode-ai/core/tool/capability"
 import { ToolRegistry } from "@opencode-ai/core/tool/registry"
+import { SkillTool } from "@opencode-ai/core/tool/skill"
 import { WebFetchTool } from "@opencode-ai/core/tool/webfetch"
 import { ToolOutputStore } from "@opencode-ai/core/tool-output-store"
-import { Effect, Layer } from "effect"
+import { DateTime, Effect, Layer } from "effect"
 import * as TestClock from "effect/testing/TestClock"
 import type { ChildProcess } from "effect/unstable/process"
 import { CapabilityRuntime } from "../../src/capability/runtime"
@@ -36,14 +43,35 @@ const identity = {
   assistantMessageID: SessionMessage.ID.make("msg_capability_e2e"),
 }
 const activations = new Map<SessionV2.ID, CapabilityState.Activation[]>()
-let packs: ReadonlyArray<CapabilityCatalog.Pack> = []
+const root = AbsolutePath.make(path.resolve(import.meta.dir, "../../../.."))
+const locationRef = Location.Ref.make({ directory: root })
+const locationLayer = Layer.succeed(
+  Location.Service,
+  Location.Service.of({
+    directory: root,
+    workspaceID: locationRef.workspaceID,
+    project: { id: Project.ID.global, directory: root },
+  }),
+)
+let context7FixtureUrl: string | undefined
 
-const catalog = CapabilityCatalog.Service.of({
-  list: () => Effect.succeed(packs),
-  get: (id) => Effect.succeed(packs.find((pack) => pack.id === id)),
-  search: () => Effect.succeed(packs),
-  register: () => Effect.void,
-})
+const catalogLayer = Layer.effect(
+  CapabilityCatalog.Service,
+  CapabilityCatalog.make({
+    globalDirectory: path.join(import.meta.dir, "../fixture/capabilities/global"),
+    projectDirectory: path.join(import.meta.dir, "../fixture/capabilities/project"),
+  }).pipe(
+    Effect.map((catalog) =>
+      CapabilityCatalog.Service.of({
+        register: catalog.register,
+        list: () => catalog.list().pipe(Effect.map((packs) => packs.map(adaptFixtureTransport))),
+        get: (id) => catalog.get(id).pipe(Effect.map((pack) => (pack ? adaptFixtureTransport(pack) : undefined))),
+        search: (query, active) =>
+          catalog.search(query, active).pipe(Effect.map((packs) => packs.map(adaptFixtureTransport))),
+      }),
+    ),
+  ),
+)
 const state = CapabilityState.Service.of({
   list: (sessionID) => Effect.succeed(activations.get(sessionID) ?? []),
   status: (sessionID) => Effect.succeed(activations.get(sessionID) ?? []),
@@ -62,41 +90,55 @@ const state = CapabilityState.Service.of({
       )
     }),
 })
-const processLayer = Layer.succeed(
-  AppProcess.Service,
-  AppProcess.Service.of({
-    run: (command: ChildProcess.Command) =>
-      Effect.succeed({
-        command: command._tag === "StandardCommand" ? command.command : "probe",
-        exitCode: 0,
-        stdout: Buffer.alloc(0),
-        stderr: Buffer.alloc(0),
-        stdoutTruncated: false,
-        stderrTruncated: false,
-      }),
-  } as unknown as AppProcess.Interface),
-)
+const processLayer = Layer.mock(AppProcess.Service, {
+  run: (command: ChildProcess.Command) =>
+    Effect.succeed({
+      command: command._tag === "StandardCommand" ? command.command : "probe",
+      exitCode: 0,
+      stdout: Buffer.alloc(0),
+      stderr: Buffer.alloc(0),
+      stdoutTruncated: false,
+      stderrTruncated: false,
+    }),
+})
 const permissionLayer = Layer.mock(PermissionV2.Service, { assert: () => Effect.void })
 const agentLayer = Layer.mock(AgentV2.Service, {
   resolve: () => Effect.succeed(AgentV2.Info.make(AgentV2.Info.empty(identity.agent))),
 })
 const sessionLayer = Layer.mock(SessionStore.Service, {
-  get: (id) => Effect.succeed({ id } as SessionV2.Info),
+  get: (id) =>
+    Effect.succeed(
+      SessionV2.Info.make({
+        id,
+        projectID: Project.ID.global,
+        title: "capability e2e",
+        cost: 0,
+        tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+        time: { created: DateTime.makeUnsafe(0), updated: DateTime.makeUnsafe(0) },
+        location: { directory: root },
+      }),
+    ),
 })
 const layer = AppNodeBuilder.build(
   LayerNode.group([
+    CapabilityCatalog.node,
     ApplicationTools.node,
     ToolRegistry.node,
     ToolRegistry.toolsNode,
     CapabilityTool.node,
+    SkillTool.node,
+    SkillGuidance.node,
     WebFetchTool.node,
     MCP.node,
     CapabilityRuntime.node,
+    PluginV2.node,
+    PluginInternal.node,
   ]),
   [
-    [CapabilityCatalog.node, Layer.succeed(CapabilityCatalog.Service, catalog)],
+    [CapabilityCatalog.node, catalogLayer],
     [CapabilityState.node, Layer.succeed(CapabilityState.Service, state)],
     [CoreCapabilityRuntime.node, CapabilityRuntime.node],
+    [Location.node, locationLayer],
     [AppProcess.node, processLayer],
     [PermissionV2.node, permissionLayer],
     [AgentV2.node, agentLayer],
@@ -108,83 +150,103 @@ const it = testEffect(layer)
 
 afterEach(() => {
   activations.clear()
-  packs = []
+  context7FixtureUrl = undefined
 })
 
 describe("built-in capability end-to-end behavior", () => {
   it.effect(
-    "isolates browser tools and preserves browser and research evidence",
+    "loads shipped packs, isolates sessions, preserves evidence, and closes the idle browser process",
     Effect.gen(function* () {
       const test = yield* TestInstance
       const page = yield* servePage(test.directory)
-      let currentPage: { readonly url: string; readonly body: string } | undefined
-      const browser = yield* serveMcp(
-        [
-          tool("navigate", { url: stringProperty }),
-          tool("inspect", {}),
-          tool("take_screenshot", { path: stringProperty }),
-        ],
-        (name, input) =>
-          Effect.gen(function* () {
-            if (name === "navigate") {
-              const url = String(input.url)
-              currentPage = { url, body: yield* Effect.promise(() => fetch(url).then((response) => response.text())) }
-              return { url, status: 200 }
-            }
-            if (name === "inspect") return { url: currentPage?.url, text: currentPage?.body }
-            const location = String(input.path)
-            yield* Effect.promise(() => Bun.write(location, screenshotPng))
-            return { path: location, url: currentPage?.url }
+      const closeMarker = path.join(test.directory, "browser-closed")
+      const bin = yield* installNpxFixture(test.directory)
+      const secret = "Bearer capability-e2e-secret"
+      const federated = yield* serveMcp(
+        [tool("search", { query: stringProperty })],
+        (_name, input) =>
+          Effect.succeed({
+            query: String(input.query),
+            results: [
+              {
+                id: "primary-1",
+                title: "Fixture Protocol Specification",
+                url: new URL("/specification", page.url).toString(),
+                publisher: "Fixture Standards Body",
+                revised: "2026-09-01",
+              },
+            ],
           }),
+        secret,
       )
-      const research = yield* serveMcp([tool("search", { query: stringProperty })], (_name, input) =>
-        Effect.succeed({
-          query: String(input.query),
-          results: [
-            {
-              id: "primary-1",
-              title: "Fixture Protocol Specification",
-              url: new URL("/specification", page.url).toString(),
-              publisher: "Fixture Standards Body",
-              revised: "2026-09-01",
-            },
-          ],
-        }),
+      const context7 = yield* serveMcp([tool("resolve-library-id", { libraryName: stringProperty })], (_name, input) =>
+        Effect.succeed({ library: String(input.libraryName), id: "/fixture/library" }),
       )
-      packs = [pack("browser", "playwright", browser.url), pack("research", "federated", research.url)]
+      context7FixtureUrl = context7.url
+      yield* environment({
+        PATH: `${bin}${path.delimiter}${process.env.PATH ?? ""}`,
+        FEDERATED_RESEARCH_MCP_URL: federated.url,
+        FEDERATED_RESEARCH_AUTHORIZATION: secret,
+        OPENCODE_TEST_BROWSER_CLOSE_MARKER: closeMarker,
+      })
+
+      const plugin = yield* PluginV2.Service
+      yield* plugin.wait(PluginV2.ID.make("capability"))
+      const catalog = yield* CapabilityCatalog.Service
+      const browserPack = yield* catalog.get("browser")
+      const researchPack = yield* catalog.get("research")
+      expect(browserPack).toMatchObject({
+        source: "builtin",
+        profiles: { default: {}, diagnostics: {} },
+        runtimes: [
+          { id: "playwright", command: ["npx", "-y", "@playwright/mcp@0.0.80"] },
+          { id: "chrome-devtools", command: ["npx", "-y", "chrome-devtools-mcp@1.8.0"] },
+        ],
+      })
+      expect(browserPack?.skills[0]?.content).toContain("Save a screenshot for the final verified state")
+      expect(researchPack).toMatchObject({ source: "builtin", profiles: { default: {} } })
+      expect(researchPack?.runtimes.find((runtime) => runtime.id === "federated-research")?.command).toEqual([
+        "${FEDERATED_RESEARCH_MCP_URL}",
+      ])
+      expect(researchPack?.skills[0]?.content).toContain("Fetch every decisive primary-source URL")
+
       const registry = yield* ToolRegistry.Service
       const before = yield* registry.materialize(browserSession)
-      expect(names(before)).not.toContain("browser_playwright_navigate")
-
+      expect(names(before)).not.toContain("browser_playwright_browser_navigate")
       yield* settle(before, browserSession, "capability_enable", { id: "browser", profiles: ["default"] })
       const browserTools = yield* registry.materialize(browserSession)
       const isolated = yield* registry.materialize(otherSession)
-      expect(names(browserTools)).toContain("browser_playwright_navigate")
-      expect(names(isolated)).not.toContain("browser_playwright_navigate")
+      expect(names(browserTools)).toContain("browser_playwright_browser_navigate")
+      expect(names(browserTools)).not.toContain("browser_chrome-devtools_list_console_messages")
+      expect(names(isolated)).not.toContain("browser_playwright_browser_navigate")
 
       const fixtureUrl = new URL("/app", page.url).toString()
       const screenshot = path.join(page.directory, "artifacts", "verified.png")
-      yield* settle(browserTools, browserSession, "browser_playwright_navigate", { url: fixtureUrl })
-      const inspected = yield* settle(browserTools, browserSession, "browser_playwright_inspect", {})
-      const captured = yield* settle(browserTools, browserSession, "browser_playwright_take_screenshot", {
-        path: screenshot,
+      yield* settle(browserTools, browserSession, "browser_playwright_browser_navigate", { url: fixtureUrl })
+      const inspected = yield* settle(browserTools, browserSession, "browser_playwright_browser_snapshot", {})
+      const captured = yield* settle(browserTools, browserSession, "browser_playwright_browser_take_screenshot", {
+        filename: screenshot,
       })
       expect(inspected.output?.structured).toEqual({ url: fixtureUrl, text: "<h1>Verified fixture</h1>" })
       expect(captured.output?.structured).toEqual({ path: screenshot, url: fixtureUrl })
       expect((yield* Effect.promise(() => Bun.file(screenshot).arrayBuffer())).byteLength).toBe(
         screenshotPng.byteLength,
       )
+      const browserSkill = yield* settle(browserTools, browserSession, "skill", { name: "browser-testing" })
+      expect(browserSkill.output?.structured).toMatchObject({
+        output: expect.stringContaining("Save a screenshot for the final verified state"),
+      })
 
       const management = yield* registry.materialize(browserSession)
       yield* settle(management, browserSession, "capability_enable", { id: "research", profiles: ["default"] })
       const researchTools = yield* registry.materialize(browserSession)
-      const found = yield* settle(researchTools, browserSession, "research_federated_search", {
+      expect(names(researchTools)).toContain("research_context7_resolve-library-id")
+      const found = yield* settle(researchTools, browserSession, "research_federated-research_search", {
         query: "fixture protocol revision",
       })
-      const citation = (found.output?.structured as { readonly results: ReadonlyArray<{ readonly url: string }> })
-        .results[0]
+      const primaryUrl = new URL("/specification", page.url).toString()
       const fetched = yield* settle(researchTools, browserSession, "webfetch", {
-        url: citation.url,
+        url: primaryUrl,
         format: "text",
       })
       expect(found.output?.structured).toMatchObject({
@@ -192,22 +254,29 @@ describe("built-in capability end-to-end behavior", () => {
           {
             id: "primary-1",
             title: "Fixture Protocol Specification",
+            url: primaryUrl,
             publisher: "Fixture Standards Body",
             revised: "2026-09-01",
           },
         ],
       })
       expect(fetched.result).toEqual({ type: "text", value: "Normative fixture requirement: preserve citations." })
+      const researchSkill = yield* settle(researchTools, browserSession, "skill", { name: "research" })
+      expect(researchSkill.output?.structured).toMatchObject({
+        output: expect.stringContaining("Fetch every decisive primary-source URL"),
+      })
+      const status = yield* settle(researchTools, browserSession, "capability_status", { id: "research" })
+      expect(JSON.stringify(status)).not.toContain(secret)
 
       const enabled = yield* registry.materialize(browserSession)
       yield* settle(enabled, browserSession, "capability_disable", { id: "browser" })
       yield* settle(enabled, browserSession, "capability_disable", { id: "research" })
-      const disabled = yield* registry.materialize(browserSession)
-      expect(names(disabled)).not.toContain("browser_playwright_navigate")
-      expect(names(disabled)).not.toContain("research_federated_search")
       yield* TestClock.adjust("31 seconds")
-      expect(names(yield* registry.materialize(browserSession))).not.toContain("browser_playwright_navigate")
-      expect(names(yield* registry.materialize(browserSession))).not.toContain("research_federated_search")
+      yield* waitForFile(closeMarker)
+      expect(yield* Effect.promise(() => Bun.file(closeMarker).exists())).toBe(true)
+      const disabled = yield* registry.materialize(browserSession)
+      expect(names(disabled)).not.toContain("browser_playwright_browser_navigate")
+      expect(names(disabled)).not.toContain("research_federated-research_search")
     }).pipe(withTmpdirInstance()),
   )
 })
@@ -218,40 +287,21 @@ const screenshotPng = Uint8Array.from(
   (character) => character.charCodeAt(0),
 )
 
+function adaptFixtureTransport(pack: CapabilityCatalog.Pack): CapabilityCatalog.Pack {
+  if (pack.id !== "research" || !context7FixtureUrl) return pack
+  return {
+    ...pack,
+    runtimes: pack.runtimes.map((runtime) =>
+      runtime.id === "context7" ? { ...runtime, command: [context7FixtureUrl!] } : runtime,
+    ),
+  }
+}
+
 function tool(name: string, properties: Readonly<Record<string, object>>): Tool {
   return {
     name,
     description: `Fixture ${name}`,
     inputSchema: { type: "object", properties, required: Object.keys(properties), additionalProperties: false },
-  }
-}
-
-function pack(id: "browser" | "research", runtime: "playwright" | "federated", url: string): CapabilityCatalog.Pack {
-  return {
-    id: CapabilityManifest.ID.make(id),
-    version: 1,
-    description: `${id} fixture capability`,
-    platforms: ["darwin", "linux"],
-    skills: [],
-    runtimes: [
-      CapabilityManifest.Runtime.make({
-        id: CapabilityManifest.ID.make(runtime),
-        type: "mcp",
-        command: [url],
-        tools: [],
-        optional: false,
-        timeoutMs: 2_000,
-      }),
-    ],
-    profiles: {
-      [CapabilityManifest.ID.make("default")]: {
-        description: `${id} fixture profile`,
-        skills: [],
-        runtimes: [CapabilityManifest.ID.make(runtime)],
-      },
-    },
-    source: "project",
-    directory: AbsolutePath.make("/fixture"),
   }
 }
 
@@ -265,6 +315,68 @@ function settle(materialization: ToolRegistry.Materialization, sessionID: Sessio
     ...identity,
     call: { type: "tool-call", id: `call-${name}`, name, input },
   })
+}
+
+function installNpxFixture(directory: string) {
+  return Effect.promise(async () => {
+    const bin = path.join(directory, "bin")
+    const executable = path.join(bin, "npx")
+    const fixture = path.join(import.meta.dir, "../fixture/capability-playwright-stdio.ts")
+    await fs.mkdir(bin, { recursive: true })
+    await Bun.write(
+      executable,
+      [
+        `#!${process.execPath}`,
+        'if (process.argv[2] !== "-y" || process.argv[3] !== "@playwright/mcp@0.0.80") process.exit(64)',
+        `await import(${JSON.stringify(fixture)})`,
+      ].join("\n"),
+    )
+    await fs.chmod(executable, 0o755)
+    return bin
+  })
+}
+
+function waitForFile(file: string) {
+  return Effect.promise(async () => {
+    if (await Bun.file(file).exists()) return
+    await new Promise<void>((resolve, reject) => {
+      const watcher = watch(path.dirname(file), (_event, filename) => {
+        if (filename !== path.basename(file)) return
+        void Bun.file(file)
+          .exists()
+          .then((exists) => {
+            if (!exists) return
+            clearTimeout(timeout)
+            watcher.close()
+            resolve()
+          }, reject)
+      })
+      const timeout = setTimeout(() => {
+        watcher.close()
+        reject(new Error(`Timed out waiting for ${file}`))
+      }, 2_000)
+    })
+  })
+}
+
+function environment(values: Readonly<Record<string, string | undefined>>) {
+  return Effect.acquireRelease(
+    Effect.sync(() => {
+      const previous = Object.fromEntries(Object.keys(values).map((name) => [name, process.env[name]]))
+      for (const [name, value] of Object.entries(values)) {
+        if (value === undefined) delete process.env[name]
+        else process.env[name] = value
+      }
+      return previous
+    }),
+    (previous) =>
+      Effect.sync(() => {
+        for (const [name, value] of Object.entries(previous)) {
+          if (value === undefined) delete process.env[name]
+          else process.env[name] = value
+        }
+      }),
+  )
 }
 
 function servePage(directory: string) {
@@ -288,6 +400,7 @@ function servePage(directory: string) {
 function serveMcp(
   tools: ReadonlyArray<Tool>,
   call: (name: string, input: Readonly<Record<string, unknown>>) => Effect.Effect<Readonly<Record<string, unknown>>>,
+  authorization?: string,
 ) {
   return Effect.acquireRelease(
     Effect.promise(async () => {
@@ -304,12 +417,18 @@ function serveMcp(
         enableJsonResponse: true,
       })
       await protocol.connect(transport)
-      const server = Bun.serve({ port: 0, fetch: (request) => transport.handleRequest(request) })
+      const server = Bun.serve({
+        port: 0,
+        fetch: (request) =>
+          authorization && request.headers.get("authorization") !== authorization
+            ? new Response("Unauthorized", { status: 401 })
+            : transport.handleRequest(request),
+      })
       return {
         url: server.url.toString(),
         close: async () => {
           await protocol.close().catch(() => undefined)
-          server.stop(true)
+          void server.stop(true)
         },
       }
     }),
