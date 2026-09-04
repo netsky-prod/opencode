@@ -434,6 +434,66 @@ describe("CapabilityTool", () => {
     }),
   )
 
+  it.effect("treats an empty requested profile list as default without enabling diagnostics", () =>
+    Effect.gen(function* () {
+      reset()
+      const browser = pack(0)
+      const diagnostics = CapabilityManifest.ID.make("diagnostics")
+      const devtools = CapabilityManifest.ID.make("chrome-devtools")
+      catalogPacks = [
+        {
+          ...browser,
+          runtimes: [
+            ...browser.runtimes,
+            CapabilityManifest.Runtime.make({
+              id: devtools,
+              type: "mcp",
+              command: ["chrome-devtools"],
+              tools: ["console"],
+              optional: false,
+            }),
+          ],
+          profiles: {
+            ...browser.profiles,
+            [diagnostics]: {
+              description: "Inspect browser diagnostics",
+              skills: [],
+              runtimes: [devtools],
+            },
+          },
+        },
+      ]
+      yieldRegistry = yield* ToolRegistry.Service
+
+      const omittedSession = SessionV2.ID.make("ses_capability_tool_omitted_profiles")
+      const omitted = yield* callForSession(omittedSession, "capability_enable", { id: "browser" })
+      const empty = yield* call("capability_enable", { id: "browser", profiles: [] })
+      expect(empty).toEqual(omitted)
+      expect(empty).toMatchObject({
+        type: "json",
+        value: {
+          id: "browser",
+          profiles: ["default"],
+          state: "active",
+          tools: ["browser_playwright_navigate"],
+        },
+      })
+      expect(activations.get(sessionID)).toEqual([{ id: "browser", profiles: ["default"], state: "active" }])
+      expect(activations.get(omittedSession)).toEqual([{ id: "browser", profiles: ["default"], state: "active" }])
+      expect(activatedKeys).toHaveLength(2)
+      expect(activatedKeys.every((key) => key.startsWith("browser/playwright#"))).toBe(true)
+
+      expect(yield* call("capability_enable", { id: "browser", profiles: ["unknown"] })).toMatchObject({
+        type: "error",
+        value: "Capability profile not found: browser/unknown",
+      })
+      expect(
+        yield* call("capability_enable", { id: "browser", profiles: Array.from({ length: 17 }, () => "default") }),
+      ).toMatchObject({ type: "error", value: expect.stringContaining("Invalid tool input") })
+      expect(activations.get(sessionID)).toEqual([{ id: "browser", profiles: ["default"], state: "active" }])
+    }),
+  )
+
   it.effect("leaves an existing activation unchanged when required runtime acquisition fails", () =>
     Effect.gen(function* () {
       reset()

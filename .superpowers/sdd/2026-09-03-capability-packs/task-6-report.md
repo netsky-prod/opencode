@@ -204,3 +204,42 @@ Prettier and git diff --check: exit 0
 ```
 
 The live Qwen gate was not rerun in this worker, as requested; the root agent owns that rerun after review.
+
+## Live-Gate Empty Profiles Fix
+
+A fresh Qwen run repeatedly serialized the optional `profiles` field as an empty array. The shared non-empty profile schema rejected that value before `capability_enable` execution, so the model could neither receive the default profile nor recover through the management tool contract.
+
+The behavior-level Core regression was written first and exercised `ToolRegistry` materialization and settlement rather than inspecting schema text. RED was:
+
+```text
+packages/core: bun test test/tool-capability.test.ts -t "treats an empty requested profile list"
+0 pass, 1 fail: Invalid tool input: Expected a value with a length of at least 1, got [] at ["profiles"]
+```
+
+The input now uses a requested-profile schema with a 0..16 length, while persisted and output profiles retain the existing 1..16 invariant. Execution normalizes an empty or omitted request to `default` before validation. The regression compares empty and omitted inputs across isolated sessions, requires identical results with output and persisted profiles `['default']`, observes only `browser/playwright#...` runtime acquisition, and verifies diagnostics remain inactive. Unknown non-empty profiles still return `Capability profile not found`, and 17 requested profiles still fail input validation.
+
+The legacy `SessionTools.resolve` integration now sends `profiles: []` through the actual bridged `capability_enable` callback and asserts the returned structured profile is `['default']` before verifying next-turn browser tools and isolation.
+
+GREEN evidence:
+
+```text
+packages/core: bun test test/tool-capability.test.ts
+22 pass, 0 fail
+
+packages/opencode: bun test test/session/prompt.test.ts -t "session tools bridge capability packs"
+1 pass, 0 fail
+
+packages/opencode: bun test test/capability/e2e.test.ts
+1 pass, 0 fail
+
+packages/core: bun typecheck
+tsgo --noEmit: exit 0
+
+packages/opencode: bun typecheck
+tsgo --noEmit: exit 0
+
+targeted oxlint: 0 errors (pre-existing warnings only)
+Prettier and git diff --check: exit 0
+```
+
+The live Qwen gate was not rerun in this worker, as requested.

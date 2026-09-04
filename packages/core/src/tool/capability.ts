@@ -36,6 +36,7 @@ export class PermissionResourceOverflow extends Schema.TaggedErrorClass<Permissi
 
 const ShortText = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(500))
 const Profiles = Schema.Array(CapabilityManifest.ID).check(Schema.isMinLength(1), Schema.isMaxLength(16))
+const RequestedProfiles = Schema.Array(CapabilityManifest.ID).check(Schema.isMaxLength(16))
 
 const DependencyHealth = Schema.Struct({
   id: CapabilityManifest.ID,
@@ -529,7 +530,7 @@ const layer = Layer.effectDiscard(
           description: "Enable one installed capability pack for this session. New tools and skills appear next turn.",
           input: Schema.Struct({
             id: CapabilityManifest.ID,
-            profiles: Profiles.pipe(
+            profiles: RequestedProfiles.pipe(
               Schema.optional,
               Schema.withDecodingDefault(Effect.succeed([CapabilityManifest.ID.make("default")])),
             ),
@@ -555,10 +556,13 @@ const layer = Layer.effectDiscard(
                     ) {
                       yield* dropHeld(key, current)
                     }
-                    const profiles = validProfiles(pack, input.profiles ?? [CapabilityManifest.ID.make("default")])
+                    const requested =
+                      input.profiles && input.profiles.length > 0
+                        ? input.profiles
+                        : [CapabilityManifest.ID.make("default")]
+                    const profiles = validProfiles(pack, requested)
                     if (!profiles) {
-                      const missing =
-                        input.profiles?.find((profile) => !Object.hasOwn(pack.profiles, profile)) ?? "default"
+                      const missing = requested.find((profile) => !Object.hasOwn(pack.profiles, profile)) ?? "default"
                       return yield* new ToolFailure({ message: `Capability profile not found: ${input.id}/${missing}` })
                     }
                     const dependencies = compatible(pack) ? yield* probe(pack) : []

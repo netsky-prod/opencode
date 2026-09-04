@@ -1202,7 +1202,7 @@ noLLMServer.instance(
       const enableFiber = yield* Effect.forkIn(
         Effect.promise(() =>
           before.capability_enable.execute!(
-            { id: "browser", profiles: ["default"] },
+            { id: "browser", profiles: [] },
             capabilityToolOptions("call-enable-browser"),
           ),
         ),
@@ -1219,7 +1219,9 @@ noLLMServer.instance(
       })
       yield* permissions.reply({ requestID: enableRequest.id, reply: "always" })
       const enabled = yield* awaitWithTimeout(Fiber.join(enableFiber), "approved capability enable did not settle")
-      expect(enabled).toMatchObject({ metadata: { structured: { id: "browser", state: "active", nextTurn: true } } })
+      expect(enabled).toMatchObject({
+        metadata: { structured: { id: "browser", profiles: ["default"], state: "active", nextTurn: true } },
+      })
       yield* Effect.promise(() =>
         before.capability_enable.execute!(
           { id: "browser", profiles: ["default"] },
