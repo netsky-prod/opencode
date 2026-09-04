@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-03
 
-**Status:** Proposed
+**Status:** Implemented and verified; see [final acceptance evidence](../../../.superpowers/sdd/2026-09-03-capability-packs/live/final/result.md) and [release report](../../../.superpowers/sdd/2026-09-03-capability-packs/task-12-report.md).
 
 **Target:** `netsky-prod/opencode` fork
 

@@ -1,5 +1,5 @@
 {
-  "status": "native-acceptance-pending",
+  "status": "verified-installed-integration-pending",
   "task11": {
     "suiteVersion": 1,
     "metadata": {
@@ -60,5 +60,228 @@
         "wallTimeMs": 250071
       }
     ]
+  },
+  "nativeAcceptance": {
+    "protocol": "Same prompt, temperature 0, isolated native sessions; capabilities disabled for baseline; global MCP/plugins and bash disabled for both; no quality deadline; screen replacement on macOS (tmux unavailable).",
+    "identity": {
+      "revision": "41d54906dbf9c1d58e2ef2f3a741812281fa9332",
+      "dirty": false,
+      "model": "runpod-qwen/qwen3.8-27b",
+      "quantization": "UD-IQ2_XXS",
+      "temperature": 0,
+      "promptDigest": "618d19656c542f413cdb4092a7900f41c4f7e5667edbe86945fb1176f0df22f1",
+      "binaryDigest": "79a9310d0c46c5a322834a9083f805f6a2fcf743aac5881f0c1c2b19a74a41a0",
+      "startedAt": "2026-09-04T22:44:13.891Z"
+    },
+    "binaryVersion": "0.0.0-local-202609042243",
+    "scoreType": "Single-scenario integration acceptance, not general model quality or speed",
+    "arms": [
+      {
+        "mode": "baseline",
+        "exitCode": 0,
+        "wallTimeMs": 432391,
+        "checks": {
+          "report": true,
+          "screenshot": false,
+          "researchTool": false,
+          "browserTool": false,
+          "checkpoint": true,
+          "invalidEmail": true,
+          "add": true,
+          "persistence": true,
+          "dedup": true,
+          "complete": true,
+          "mobile": true
+        },
+        "passed": 8,
+        "total": 11,
+        "integrity": {
+          "oneConversation": true,
+          "releasedPacks": true,
+          "pendingLoopInputs": 0,
+          "acknowledgedLoopInputs": 1,
+          "loopStates": ["completed"]
+        },
+        "externalRequests": [],
+        "artifactSHA256": {
+          "index.html": "c991aa55355a2c55d8d485308e54fd8a4c8ca91165d60b3b3d21b44013e36d84",
+          "research.md": "7b60ef4661a7ff40b357ef59e87a1a6655c30266da8baf1313b8b22c7cc0efaf"
+        },
+        "toolTrace": [
+          ["read", "completed"],
+          ["loop_list", "completed"],
+          ["read", "completed"],
+          ["webfetch", "error"],
+          ["webfetch", "error"],
+          ["loop_create", "completed"],
+          ["webfetch", "completed"],
+          ["webfetch", "completed"],
+          ["webfetch", "completed"],
+          ["webfetch", "completed"],
+          ["webfetch", "completed"],
+          ["write", "completed"],
+          ["write", "completed"],
+          ["webfetch", "completed"],
+          ["grep", "completed"],
+          ["grep", "completed"],
+          ["grep", "completed"],
+          ["loop_wakeup", "completed"],
+          ["loop_list", "completed"],
+          ["glob", "completed"],
+          ["webfetch", "completed"]
+        ]
+      },
+      {
+        "mode": "candidate",
+        "exitCode": 0,
+        "wallTimeMs": 638550,
+        "checks": {
+          "report": true,
+          "screenshot": true,
+          "researchTool": true,
+          "browserTool": true,
+          "checkpoint": true,
+          "invalidEmail": true,
+          "add": true,
+          "persistence": true,
+          "dedup": true,
+          "complete": true,
+          "mobile": true
+        },
+        "passed": 11,
+        "total": 11,
+        "integrity": {
+          "oneConversation": true,
+          "releasedPacks": true,
+          "pendingLoopInputs": 0,
+          "acknowledgedLoopInputs": 1,
+          "loopStates": ["completed"]
+        },
+        "externalRequests": [],
+        "artifactSHA256": {
+          "index.html": "57c8e5f5ad9e2cb90aa1550942730b570803d667f29586d70ff25fbe7b884830",
+          "research.md": "a5f6ca9dfa2f70544847dcc586b55a369a36b6c1e51c5ec1536a4ac7ff2a3f15",
+          "evidence/followup.png": "986c19d389713c0d47694fcd70fe42086fac2e1ac68e93ee00f6f3417ebabe7c",
+          "evidence/README.md": "81e35b43d7317bb31fb9a36c5de0c31ea1ded0ee43015fb71714bed261c2ceb5"
+        },
+        "toolTrace": [
+          ["capability_status", "completed"],
+          ["read", "completed"],
+          ["loop_create", "completed"],
+          ["glob", "completed"],
+          ["capability_enable", "completed"],
+          ["capability_enable", "completed"],
+          ["skill", "completed"],
+          ["research_federated-research_search", "completed"],
+          ["webfetch", "completed"],
+          ["webfetch", "completed"],
+          ["webfetch", "completed"],
+          ["webfetch", "error"],
+          ["webfetch", "completed"],
+          ["write", "completed"],
+          ["write", "completed"],
+          ["loop_checkpoint", "completed"],
+          ["browser_playwright_browser_navigate", "completed"],
+          ["browser_playwright_browser_console_messages", "completed"],
+          ["browser_playwright_browser_snapshot", "completed"],
+          ["edit", "completed"],
+          ["browser_playwright_browser_navigate", "completed"],
+          ["browser_playwright_browser_fill_form", "error"],
+          ["browser_playwright_browser_snapshot", "completed"],
+          ["browser_playwright_browser_type", "completed"],
+          ["browser_playwright_browser_type", "completed"],
+          ["browser_playwright_browser_click", "completed"],
+          ["browser_playwright_browser_snapshot", "completed"],
+          ["browser_playwright_browser_navigate", "completed"],
+          ["browser_playwright_browser_snapshot", "completed"],
+          ["browser_playwright_browser_type", "completed"],
+          ["browser_playwright_browser_type", "completed"],
+          ["browser_playwright_browser_click", "completed"],
+          ["browser_playwright_browser_snapshot", "completed"],
+          ["browser_playwright_browser_type", "error"],
+          ["browser_playwright_browser_snapshot", "completed"],
+          ["browser_playwright_browser_type", "completed"],
+          ["browser_playwright_browser_click", "completed"],
+          ["browser_playwright_browser_find", "completed"],
+          ["browser_playwright_browser_evaluate", "completed"],
+          ["browser_playwright_browser_click", "completed"],
+          ["browser_playwright_browser_evaluate", "completed"],
+          ["browser_playwright_browser_snapshot", "completed"],
+          ["browser_playwright_browser_click", "completed"],
+          ["browser_playwright_browser_network_requests", "completed"],
+          ["browser_playwright_browser_take_screenshot", "error"],
+          ["write", "completed"],
+          ["browser_playwright_browser_take_screenshot", "completed"],
+          ["read", "completed"],
+          ["browser_playwright_browser_find", "completed"],
+          ["browser_playwright_browser_evaluate", "completed"],
+          ["browser_playwright_browser_close", "completed"],
+          ["loop_checkpoint", "error"],
+          ["loop_wakeup", "completed"],
+          ["capability_disable", "completed"],
+          ["capability_disable", "completed"],
+          ["glob", "completed"],
+          ["grep", "completed"],
+          ["loop_wakeup", "completed"]
+        ]
+      }
+    ],
+    "scorerCorrection": {
+      "originalBaselinePassed": 7,
+      "correctedBaselinePassed": 8,
+      "reason": "Accept existing deliverable references in verifiedFacts.evidence as well as artifacts; both arms scored symmetrically. Original strict output preserved locally.",
+      "regressionTests": {
+        "passed": 2,
+        "assertions": 8
+      }
+    },
+    "exclusions": [
+      "Earlier split-history native run invalidated and retained, not scored as acceptance.",
+      "Raw transcripts, databases, endpoints, session identifiers and credentials are not published."
+    ],
+    "limitations": [
+      "Both implementations passed all six external functional UI checks; candidate advantage was actual research MCP, browser verification and screenshot evidence.",
+      "Candidate took longer and made recoverable tool errors; this is not a speed or universal accuracy claim.",
+      "Research report uses redirecting aliases as canonical URLs and omits the browser-use qualifier in one tracker-retention summary; report presence is not a full factual-accuracy audit."
+    ]
+  },
+  "verification": {
+    "core": {
+      "passed": 1243,
+      "failed": 0,
+      "assertions": 3573,
+      "files": 157
+    },
+    "opencodeIsolated": {
+      "filesPassed": 260,
+      "filesFailed": 0
+    },
+    "schema": {
+      "passed": 15,
+      "failed": 0
+    },
+    "typechecks": ["core", "opencode", "schema", "sdk", "client"],
+    "migrationCheck": true,
+    "nativeBuild": true,
+    "evalDryRun": true,
+    "lint": {
+      "errors": 0,
+      "warnings": 40
+    },
+    "independentReview": "No Critical or Important findings in final runtime review"
+  },
+  "distribution": {
+    "installed": true,
+    "installedBinarySHA256": "79a9310d0c46c5a322834a9083f805f6a2fcf743aac5881f0c1c2b19a74a41a0",
+    "previousBinaryBackupSHA256": "b3651734d16b8b07d97dcc52472ad9dcfa0136d4bf92f4f4454ccbc93157a18e",
+    "ordinaryShellVerification": {
+      "version": "0.0.0-local-202609042243",
+      "node": "v24.20.0",
+      "npx": "12.0.2",
+      "connectedMCPs": ["gemini-research", "context7"],
+      "existingSkills": 16
+    },
+    "integration": "pending",
+    "publishedRelease": false
   }
 }
