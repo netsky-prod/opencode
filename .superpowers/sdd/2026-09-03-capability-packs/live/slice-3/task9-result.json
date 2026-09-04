@@ -1,0 +1,56 @@
+{
+  "status": "passed",
+  "runner": "screen",
+  "model": "runpod-qwen/qwen3.8-27b",
+  "checks": {
+    "isolatedScreenPerPack": true,
+    "globalResearchMcpsIsolated": true,
+    "zeroFinalToolErrors": true,
+    "allPacksDisabled": true,
+    "noCredentialsPersisted": true
+  },
+  "gates": {
+    "mobile": {
+      "profile": "ios",
+      "actualHostInspection": true,
+      "actionableDegradation": true,
+      "reportVerified": true
+    },
+    "security": {
+      "profile": "static",
+      "seededFindingDetected": true,
+      "sourceReproduced": true,
+      "artifactVerified": true
+    },
+    "documents": {
+      "profile": "default",
+      "factsVerified": true,
+      "largeOutputArtifactVerified": true
+    },
+    "github": {
+      "profile": "default",
+      "fixtureInspected": true,
+      "headUnchanged": true,
+      "workingTreeUnchanged": true,
+      "remoteWrites": false
+    },
+    "deploy": {
+      "profile": "core",
+      "daemonWasAlreadyAvailable": true,
+      "buildWithoutPull": true,
+      "containerHealthy": true,
+      "externalResponseVerified": true,
+      "ownedResourcesRemoved": true
+    }
+  },
+  "cleanup": {
+    "ownedScreenSessions": 0,
+    "ownedProcesses": 0,
+    "ownedContainers": 0,
+    "ownedImages": 0,
+    "ownedNetworks": 0,
+    "ownedListeners": 0,
+    "oldBrowserFixtureListeners": 0,
+    "failurePathInjectedAndClean": true
+  }
+}

@@ -1,0 +1,54 @@
+{
+  "id": "security",
+  "version": 1,
+  "description": "Perform permission-governed static and dynamic security assessment with normalized evidence artifacts.",
+  "platforms": ["darwin", "linux"],
+  "skills": [
+    {
+      "name": "security-testing",
+      "description": "Scope authorized security checks, preserve reproducible findings, and distinguish verified vulnerabilities from leads.",
+      "path": "security.md"
+    }
+  ],
+  "runtimes": [],
+  "profiles": {
+    "static": {
+      "description": "Analyze source, secrets, dependencies, filesystems, images, and supply-chain metadata.",
+      "skills": ["security-testing"],
+      "runtimes": []
+    },
+    "dynamic": {
+      "description": "Assess authorized web, API, network, protocol, and load behavior.",
+      "skills": ["security-testing"],
+      "runtimes": []
+    }
+  },
+  "dependencies": [
+    { "id": "semgrep", "check": ["semgrep", "--version"], "optional": true, "profiles": ["static"] },
+    { "id": "codeql", "check": ["codeql", "version"], "optional": true, "profiles": ["static"] },
+    { "id": "gitleaks", "check": ["gitleaks", "version"], "optional": true, "profiles": ["static"] },
+    { "id": "osv-scanner", "check": ["osv-scanner", "--version"], "optional": true, "profiles": ["static"] },
+    { "id": "trivy", "check": ["trivy", "--version"], "optional": true, "profiles": ["static"] },
+    { "id": "zap", "check": ["zap.sh", "-version"], "optional": true, "profiles": ["dynamic"] },
+    { "id": "nuclei", "check": ["nuclei", "-version"], "optional": true, "profiles": ["dynamic"] },
+    { "id": "schemathesis", "check": ["schemathesis", "--version"], "optional": true, "profiles": ["dynamic"] },
+    { "id": "nmap", "check": ["nmap", "--version"], "optional": true, "profiles": ["dynamic"] },
+    { "id": "mitmproxy", "check": ["mitmproxy", "--version"], "optional": true, "profiles": ["dynamic"] },
+    { "id": "k6", "check": ["k6", "version"], "optional": true, "profiles": ["dynamic"] }
+  ],
+  "permissions": {
+    "hints": [
+      { "action": "bash", "resource": "semgrep *" },
+      { "action": "bash", "resource": "codeql *" },
+      { "action": "bash", "resource": "gitleaks *" },
+      { "action": "bash", "resource": "osv-scanner *" },
+      { "action": "bash", "resource": "trivy *" },
+      { "action": "bash", "resource": "zap.sh *" },
+      { "action": "bash", "resource": "nuclei *" },
+      { "action": "bash", "resource": "schemathesis *" },
+      { "action": "bash", "resource": "nmap *" },
+      { "action": "bash", "resource": "mitmproxy *" },
+      { "action": "bash", "resource": "k6 *" }
+    ]
+  }
+}

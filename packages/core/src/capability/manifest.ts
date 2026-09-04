@@ -10,6 +10,9 @@ const idPattern = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/
 export const ID = Schema.String.check(Schema.isPattern(idPattern)).pipe(Schema.brand("CapabilityManifest.ID"))
 export type ID = typeof ID.Type
 
+export const Platform = Schema.Literals(["darwin", "linux"])
+export type Platform = typeof Platform.Type
+
 export const Skill = Schema.Struct({
   name: ID,
   description: Schema.NonEmptyString,
@@ -34,6 +37,7 @@ export const Profile = Schema.Struct({
   description: Schema.NonEmptyString,
   skills: Schema.Array(ID),
   runtimes: Schema.Array(ID),
+  platforms: Schema.optional(Schema.Array(Platform).check(Schema.isMinLength(1))),
 })
 export type Profile = typeof Profile.Type
 
@@ -41,11 +45,19 @@ export const Dependency = Schema.Struct({
   id: ID,
   check: Schema.Array(Schema.NonEmptyString),
   optional: Schema.Boolean.pipe(Schema.optional, Schema.withDecodingDefault(Effect.succeed(false))),
+  profiles: Schema.optional(Schema.Array(ID).check(Schema.isMinLength(1))),
 })
 export type Dependency = typeof Dependency.Type
 
+export const PermissionHint = Schema.Struct({
+  action: Schema.NonEmptyString,
+  resource: Schema.NonEmptyString,
+})
+export type PermissionHint = typeof PermissionHint.Type
+
 export const Permissions = Schema.Struct({
   servers: Schema.optional(Schema.Record(ID, ConfigMCP.Server)),
+  hints: Schema.optional(Schema.Array(PermissionHint)),
 })
 export type Permissions = typeof Permissions.Type
 
@@ -53,7 +65,7 @@ export const Manifest = Schema.Struct({
   id: ID,
   version: Schema.Literal(1),
   description: Schema.NonEmptyString,
-  platforms: Schema.Array(Schema.Literals(["darwin", "linux"])),
+  platforms: Schema.Array(Platform),
   skills: Schema.Array(Skill),
   runtimes: Schema.Array(Runtime),
   profiles: Schema.Record(ID, Profile),
@@ -95,9 +107,19 @@ function validate(manifest: Manifest) {
   for (const dependency of manifest.dependencies ?? []) {
     if (dependencies.has(dependency.id)) throw new Error(`Duplicate dependency ID: ${dependency.id}`)
     dependencies.add(dependency.id)
+    for (const profile of dependency.profiles ?? []) {
+      if (!Object.hasOwn(manifest.profiles, profile)) {
+        throw new Error(`Dependency ${dependency.id} references unknown profile: ${profile}`)
+      }
+    }
   }
 
   for (const [id, profile] of Object.entries(manifest.profiles)) {
+    for (const platform of profile.platforms ?? []) {
+      if (!manifest.platforms.includes(platform)) {
+        throw new Error(`Profile ${id} declares ${platform} outside the manifest platforms`)
+      }
+    }
     for (const skill of profile.skills) {
       if (!skills.has(skill)) throw new Error(`Profile ${id} references unknown skill: ${skill}`)
     }

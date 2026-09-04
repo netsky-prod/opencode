@@ -1,0 +1,25 @@
+{
+  "id": "github",
+  "version": 1,
+  "description": "Inspect GitHub repositories, issues, pull requests, Actions, and releases through the authenticated gh CLI.",
+  "platforms": ["darwin", "linux"],
+  "skills": [
+    {
+      "name": "github-workflows",
+      "description": "Use structured gh output, prefer read-only inspection, and verify CI or release state.",
+      "path": "github.md"
+    }
+  ],
+  "runtimes": [],
+  "profiles": {
+    "default": {
+      "description": "Inspect repository metadata, issues, pull requests, Actions, and releases with gh.",
+      "skills": ["github-workflows"],
+      "runtimes": []
+    }
+  },
+  "dependencies": [
+    { "id": "gh", "check": ["gh", "--version"], "optional": true, "profiles": ["default"] },
+    { "id": "gh-auth", "check": ["gh", "auth", "status"], "optional": true, "profiles": ["default"] }
+  ]
+}

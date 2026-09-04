@@ -48,8 +48,12 @@ describe("CapabilityManifest", () => {
   })
 
   test("rejects profile references and skill paths outside their manifest", () => {
-    expect(() => decode({ ...browserFixture, profiles: { default: { ...browserFixture.profiles.default, skills: ["missing"] } } })).toThrow()
-    expect(() => decode({ ...browserFixture, skills: [{ ...browserFixture.skills[0], path: "../outside.md" }] })).toThrow()
+    expect(() =>
+      decode({ ...browserFixture, profiles: { default: { ...browserFixture.profiles.default, skills: ["missing"] } } }),
+    ).toThrow()
+    expect(() =>
+      decode({ ...browserFixture, skills: [{ ...browserFixture.skills[0], path: "../outside.md" }] }),
+    ).toThrow()
   })
 
   test("canonicalizes runtime tool names using pack and runtime IDs", () => {
@@ -76,5 +80,67 @@ describe("CapabilityManifest", () => {
     expect(() =>
       decode({ ...browserFixture, dependencies: [{ id: "node", check: ["node", "--version"], typo: true }] }),
     ).toThrow()
+  })
+
+  test("decodes profile-scoped platforms, probes, and canonical permission hints", () => {
+    const manifest = decode({
+      ...browserFixture,
+      profiles: {
+        default: {
+          ...browserFixture.profiles.default,
+          platforms: ["darwin"],
+        },
+      },
+      dependencies: [
+        {
+          id: "xcodebuild",
+          check: ["xcodebuild", "-version"],
+          optional: true,
+          profiles: ["default"],
+        },
+      ],
+      permissions: {
+        hints: [{ action: "bash", resource: "xcodebuild *" }],
+      },
+    })
+
+    expect(JSON.parse(JSON.stringify(manifest.profiles[CapabilityManifest.ID.make("default")]))).toEqual({
+      description: "Browse and inspect applications.",
+      skills: ["browser-testing"],
+      runtimes: ["playwright"],
+      platforms: ["darwin"],
+    })
+    expect(JSON.parse(JSON.stringify(manifest.dependencies))).toEqual([
+      {
+        id: "xcodebuild",
+        check: ["xcodebuild", "-version"],
+        optional: true,
+        profiles: ["default"],
+      },
+    ])
+    expect(JSON.parse(JSON.stringify(manifest.permissions))).toEqual({
+      hints: [{ action: "bash", resource: "xcodebuild *" }],
+    })
+  })
+
+  test("rejects profile platform escapes and dependency profile typos", () => {
+    expect(() =>
+      decode({
+        ...browserFixture,
+        platforms: ["darwin"],
+        profiles: {
+          default: {
+            ...browserFixture.profiles.default,
+            platforms: ["linux"],
+          },
+        },
+      }),
+    ).toThrow("outside the manifest platforms")
+    expect(() =>
+      decode({
+        ...browserFixture,
+        dependencies: [{ id: "node", check: ["node", "--version"], profiles: ["missing"] }],
+      }),
+    ).toThrow("references unknown profile")
   })
 })

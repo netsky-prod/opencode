@@ -1,0 +1,44 @@
+{
+  "id": "deploy",
+  "version": 1,
+  "description": "Build, inspect, deploy, and health-check services through permission-governed local and provider CLIs.",
+  "platforms": ["darwin", "linux"],
+  "skills": [
+    {
+      "name": "deployment-verification",
+      "description": "Plan reversible deployments, preserve logs, verify health externally, and clean disposable resources.",
+      "path": "deploy.md"
+    }
+  ],
+  "runtimes": [],
+  "profiles": {
+    "core": {
+      "description": "Build, compose, inspect, log, and health-check local Docker services.",
+      "skills": ["deployment-verification"],
+      "runtimes": []
+    },
+    "runpod": {
+      "description": "Inspect and operate explicitly authorized RunPod resources with runpodctl.",
+      "skills": ["deployment-verification"],
+      "runtimes": []
+    },
+    "cloudflare": {
+      "description": "Inspect and operate explicitly authorized Cloudflare resources with Wrangler.",
+      "skills": ["deployment-verification"],
+      "runtimes": []
+    }
+  },
+  "dependencies": [
+    { "id": "docker", "check": ["docker", "version"], "optional": true, "profiles": ["core"] },
+    { "id": "docker-compose", "check": ["docker", "compose", "version"], "optional": true, "profiles": ["core"] },
+    { "id": "runpodctl", "check": ["runpodctl", "version"], "optional": true, "profiles": ["runpod"] },
+    { "id": "wrangler", "check": ["wrangler", "--version"], "optional": true, "profiles": ["cloudflare"] }
+  ],
+  "permissions": {
+    "hints": [
+      { "action": "bash", "resource": "docker *" },
+      { "action": "bash", "resource": "runpodctl *" },
+      { "action": "bash", "resource": "wrangler *" }
+    ]
+  }
+}

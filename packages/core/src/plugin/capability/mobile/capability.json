@@ -1,0 +1,54 @@
+{
+  "id": "mobile",
+  "version": 1,
+  "description": "Inspect, run, and verify iOS and Android applications with platform-aware simulator and device diagnostics.",
+  "platforms": ["darwin", "linux"],
+  "skills": [
+    {
+      "name": "mobile-testing",
+      "description": "Select an available mobile target, verify observable app behavior, and preserve screenshots and crash evidence.",
+      "path": "mobile.md"
+    }
+  ],
+  "runtimes": [],
+  "profiles": {
+    "ios": {
+      "description": "Inspect iOS builds and simulators with Xcode, simctl, and Flutter on macOS.",
+      "skills": ["mobile-testing"],
+      "runtimes": [],
+      "platforms": ["darwin"]
+    },
+    "android": {
+      "description": "Inspect Android builds, emulators, and devices with adb and Flutter.",
+      "skills": ["mobile-testing"],
+      "runtimes": [],
+      "platforms": ["darwin", "linux"]
+    }
+  },
+  "dependencies": [
+    {
+      "id": "xcodebuild",
+      "check": ["xcodebuild", "-version"],
+      "optional": true,
+      "profiles": ["ios"]
+    },
+    {
+      "id": "xcrun",
+      "check": ["xcrun", "simctl", "list", "-j"],
+      "optional": true,
+      "profiles": ["ios"]
+    },
+    {
+      "id": "flutter",
+      "check": ["flutter", "--version"],
+      "optional": true,
+      "profiles": ["ios", "android"]
+    },
+    {
+      "id": "adb",
+      "check": ["adb", "version"],
+      "optional": true,
+      "profiles": ["android"]
+    }
+  ]
+}

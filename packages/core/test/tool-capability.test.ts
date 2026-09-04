@@ -69,6 +69,65 @@ const pack = (index: number): CapabilityCatalog.Pack => ({
   ],
 })
 
+const mobilePack = (): CapabilityCatalog.Pack => ({
+  id: CapabilityManifest.ID.make("mobile"),
+  version: 1,
+  description: "Inspect mobile applications",
+  platforms: ["darwin", "linux"],
+  source: "builtin",
+  directory: AbsolutePath.make("/capabilities/mobile"),
+  skills: [
+    {
+      name: CapabilityManifest.ID.make("mobile-testing"),
+      description: "Inspect mobile applications",
+      path: "mobile.md",
+      location: AbsolutePath.make("/capabilities/mobile/mobile.md"),
+      content: "# Mobile",
+    },
+  ],
+  runtimes: [],
+  profiles: {
+    [CapabilityManifest.ID.make("ios")]: {
+      description: "Inspect iOS applications",
+      skills: [CapabilityManifest.ID.make("mobile-testing")],
+      runtimes: [],
+      platforms: ["darwin"],
+    },
+    [CapabilityManifest.ID.make("android")]: {
+      description: "Inspect Android applications",
+      skills: [CapabilityManifest.ID.make("mobile-testing")],
+      runtimes: [],
+      platforms: ["darwin", "linux"],
+    },
+  },
+  dependencies: [
+    {
+      id: CapabilityManifest.ID.make("xcodebuild"),
+      check: ["xcodebuild", "-version"],
+      optional: true,
+      profiles: [CapabilityManifest.ID.make("ios")],
+    },
+    {
+      id: CapabilityManifest.ID.make("xcrun"),
+      check: ["xcrun", "simctl", "list", "-j"],
+      optional: true,
+      profiles: [CapabilityManifest.ID.make("ios")],
+    },
+    {
+      id: CapabilityManifest.ID.make("flutter"),
+      check: ["flutter", "--version"],
+      optional: true,
+      profiles: [CapabilityManifest.ID.make("ios"), CapabilityManifest.ID.make("android")],
+    },
+    {
+      id: CapabilityManifest.ID.make("adb"),
+      check: ["adb", "version"],
+      optional: true,
+      profiles: [CapabilityManifest.ID.make("android")],
+    },
+  ],
+})
+
 const packs = Array.from({ length: 12 }, (_, index) => pack(index))
 let catalogPacks = packs
 const activations = new Map<SessionV2.ID, CapabilityState.Activation[]>()
@@ -80,6 +139,8 @@ let runtimeCalls = 0
 let denyRuntime = false
 let deniedResource: string | undefined
 let probeExitCode = 0
+const probeFailures = new Set<string>()
+const probeCommands: string[] = []
 let runtimeReferences:
   | ((definitions: ReadonlyArray<CapabilityRuntime.ActivationInput>) => ReadonlyArray<CapabilityRuntime.Reference>)
   | undefined
@@ -200,9 +261,11 @@ const appProcess = Layer.succeed(
     run: (command: ChildProcess.Command) =>
       Effect.sync(() => {
         events.push("probe")
+        const rendered = command._tag === "StandardCommand" ? [command.command, ...command.args].join(" ") : "probe"
+        probeCommands.push(rendered)
         return {
           command: command._tag === "StandardCommand" ? command.command : "probe",
-          exitCode: probeExitCode,
+          exitCode: probeFailures.has(rendered) ? 1 : probeExitCode,
           stdout: Buffer.alloc(0),
           stderr: Buffer.alloc(0),
           stdoutTruncated: false,
@@ -265,6 +328,8 @@ const reset = () => {
   denyRuntime = false
   deniedResource = undefined
   probeExitCode = 0
+  probeFailures.clear()
+  probeCommands.length = 0
   runtimeReferences = undefined
   activatedKeys.length = 0
   releasedKeys.length = 0
@@ -491,6 +556,80 @@ describe("CapabilityTool", () => {
         yield* call("capability_enable", { id: "browser", profiles: Array.from({ length: 17 }, () => "default") }),
       ).toMatchObject({ type: "error", value: expect.stringContaining("Invalid tool input") })
       expect(activations.get(sessionID)).toEqual([{ id: "browser", profiles: ["default"], state: "active" }])
+    }),
+  )
+
+  it.effect("accepts a provider-stable singular profile and rejects ambiguous or conflicting aliases", () =>
+    Effect.gen(function* () {
+      reset()
+      catalogPacks = [mobilePack()]
+      yieldRegistry = yield* ToolRegistry.Service
+
+      const definition = (yield* yieldRegistry.materialize(sessionID)).definitions.find(
+        (item) => item.name === "capability_enable",
+      )
+      const schema = definition?.inputSchema as { properties?: Record<string, unknown> } | undefined
+      expect(Object.keys(schema?.properties ?? {}).toSorted()).toEqual(["id", "profile", "profiles"])
+      expect(JSON.stringify(schema?.properties?.profile)).toContain('"type":"string"')
+      expect(JSON.stringify(schema?.properties?.profiles)).toContain('"type":"array"')
+
+      yield* withPlatform(
+        "darwin",
+        Effect.gen(function* () {
+          expect(yield* call("capability_enable", { id: "mobile", profile: "ios", profiles: [] })).toMatchObject({
+            type: "json",
+            value: { id: "mobile", profiles: ["ios"], state: "active" },
+          })
+          expect(activations.get(sessionID)).toEqual([{ id: "mobile", profiles: ["ios"], state: "active" }])
+
+          const probesBeforeConflict = probeCommands.length
+          expect(
+            yield* call("capability_enable", { id: "mobile", profile: "ios", profiles: ["android"] }),
+          ).toMatchObject({
+            type: "error",
+            value: "Conflicting capability profile aliases: profile=ios, profiles=android",
+          })
+          expect(probeCommands).toHaveLength(probesBeforeConflict)
+          expect(activations.get(sessionID)).toEqual([{ id: "mobile", profiles: ["ios"], state: "active" }])
+        }),
+      )
+
+      const ambiguousSession = SessionV2.ID.make("ses_capability_tool_ambiguous_profiles")
+      expect(
+        yield* callForSession(ambiguousSession, "capability_enable", { id: "mobile", profiles: [] }),
+      ).toMatchObject({
+        type: "error",
+        value: "Capability mobile requires a profile. Available profiles: ios, android",
+      })
+      expect(activations.has(ambiguousSession)).toBe(false)
+
+      const sole = CapabilityManifest.ID.make("solo")
+      catalogPacks = [
+        {
+          ...mobilePack(),
+          profiles: {
+            [sole]: {
+              description: "Only profile",
+              skills: [CapabilityManifest.ID.make("mobile-testing")],
+              runtimes: [],
+              platforms: ["darwin"],
+            },
+          },
+          dependencies: [],
+        },
+      ]
+      const soleSession = SessionV2.ID.make("ses_capability_tool_sole_profile")
+      yield* withPlatform(
+        "darwin",
+        Effect.gen(function* () {
+          expect(yield* callForSession(soleSession, "capability_enable", { id: "mobile", profiles: [] })).toMatchObject(
+            {
+              type: "json",
+              value: { profiles: ["solo"], state: "active" },
+            },
+          )
+        }),
+      )
     }),
   )
 
@@ -757,13 +896,111 @@ describe("CapabilityTool", () => {
     }),
   )
 
+  it.effect("reports iOS unsupported on Linux while missing Android tools degrade only Android", () =>
+    withPlatform(
+      "linux",
+      Effect.gen(function* () {
+        reset()
+        catalogPacks = [mobilePack()]
+        probeFailures.add("adb version")
+        yieldRegistry = yield* ToolRegistry.Service
+
+        expect(yield* call("capability_status", { id: "mobile" })).toMatchObject({
+          type: "json",
+          value: {
+            capabilities: [
+              expect.objectContaining({
+                id: "mobile",
+                profileStatus: {
+                  android: expect.objectContaining({
+                    state: "degraded",
+                    dependencies: expect.arrayContaining([
+                      expect.objectContaining({ id: "adb", state: "optional-missing" }),
+                    ]),
+                  }),
+                  ios: expect.objectContaining({
+                    state: "unsupported",
+                    dependencies: [],
+                    remediation: expect.arrayContaining([expect.stringContaining("darwin")]),
+                  }),
+                },
+              }),
+            ],
+          },
+        })
+        expect(probeCommands.toSorted()).toEqual(["adb version", "flutter --version"])
+
+        probeCommands.length = 0
+        expect(yield* call("capability_enable", { id: "mobile", profiles: ["ios"] })).toMatchObject({
+          type: "json",
+          value: { state: "unsupported", nextTurn: false },
+        })
+        expect(probeCommands).toEqual([])
+        expect(activations.get(sessionID)).toBeUndefined()
+
+        expect(yield* call("capability_enable", { id: "mobile", profiles: ["android"] })).toMatchObject({
+          type: "json",
+          value: {
+            state: "degraded",
+            profiles: ["android"],
+            dependencies: expect.arrayContaining([expect.objectContaining({ id: "adb", state: "optional-missing" })]),
+          },
+        })
+        expect(probeCommands.toSorted()).toEqual(["adb version", "flutter --version"])
+        expect(activations.get(sessionID)).toEqual([{ id: "mobile", profiles: ["android"], state: "degraded" }])
+      }),
+    ),
+  )
+
+  it.effect("keeps an optional iOS probe failure out of Android profile health", () =>
+    withPlatform(
+      "darwin",
+      Effect.gen(function* () {
+        reset()
+        catalogPacks = [mobilePack()]
+        yieldRegistry = yield* ToolRegistry.Service
+        expect(yield* call("capability_enable", { id: "mobile", profiles: ["android"] })).toMatchObject({
+          type: "json",
+          value: { state: "active", profiles: ["android"] },
+        })
+        probeFailures.add("xcodebuild -version")
+
+        expect(yield* call("capability_status", { id: "mobile" })).toMatchObject({
+          type: "json",
+          value: {
+            capabilities: [
+              expect.objectContaining({
+                state: "active",
+                remediation: [],
+                profileStatus: {
+                  android: expect.objectContaining({ state: "healthy" }),
+                  ios: expect.objectContaining({
+                    state: "degraded",
+                    remediation: expect.arrayContaining([expect.stringContaining("xcodebuild")]),
+                  }),
+                },
+              }),
+            ],
+          },
+        })
+      }),
+    ),
+  )
+
   it.effect("reports missing required dependencies as failed and invalid persisted profiles as unavailable", () =>
     Effect.gen(function* () {
       reset()
       yieldRegistry = yield* ToolRegistry.Service
-      activations.set(sessionID, [{ id: "browser", profiles: ["missing-profile"], state: "active" }])
       probeExitCode = 1
 
+      expect(yield* call("capability_status", { id: "browser" })).toMatchObject({
+        type: "json",
+        value: {
+          capabilities: [expect.objectContaining({ id: "browser", state: "failed" })],
+        },
+      })
+
+      activations.set(sessionID, [{ id: "browser", profiles: ["missing-profile"], state: "active" }])
       expect(yield* call("capability_status", { id: "browser" })).toMatchObject({
         type: "json",
         value: {
@@ -894,3 +1131,15 @@ describe("CapabilityTool", () => {
     }),
   )
 })
+
+function withPlatform<A, E, R>(platform: "darwin" | "linux", effect: Effect.Effect<A, E, R>) {
+  return Effect.acquireUseRelease(
+    Effect.sync(() => process.platform),
+    () =>
+      Effect.sync(() => Object.defineProperty(process, "platform", { configurable: true, value: platform })).pipe(
+        Effect.andThen(effect),
+      ),
+    (original) =>
+      Effect.sync(() => Object.defineProperty(process, "platform", { configurable: true, value: original })),
+  )
+}

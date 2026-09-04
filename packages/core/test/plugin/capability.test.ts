@@ -66,4 +66,106 @@ describe("CapabilityPlugin.Plugin", () => {
       (temporary) => Effect.promise(() => temporary[Symbol.asyncDispose]()),
     ),
   )
+
+  it.live("ships every operational profile with exact profile-scoped probes", () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => tmpdir()),
+      (temporary) =>
+        Effect.gen(function* () {
+          const catalog = yield* CapabilityCatalog.make({
+            globalDirectory: path.join(temporary.path, "global"),
+            projectDirectory: path.join(temporary.path, "project"),
+          })
+          yield* CapabilityPlugin.Plugin.effect(host()).pipe(Effect.provideService(CapabilityCatalog.Service, catalog))
+
+          const packs = yield* catalog.list()
+          expect(packs.map((pack) => String(pack.id))).toEqual([
+            "browser",
+            "deploy",
+            "documents",
+            "github",
+            "mobile",
+            "research",
+            "security",
+          ])
+          expect(Object.keys((yield* catalog.get("mobile"))!.profiles).toSorted()).toEqual(["android", "ios"])
+          expect(Object.keys((yield* catalog.get("security"))!.profiles).toSorted()).toEqual(["dynamic", "static"])
+          expect(Object.keys((yield* catalog.get("documents"))!.profiles)).toEqual(["default"])
+          expect(Object.keys((yield* catalog.get("github"))!.profiles)).toEqual(["default"])
+          expect(Object.keys((yield* catalog.get("deploy"))!.profiles).toSorted()).toEqual([
+            "cloudflare",
+            "core",
+            "runpod",
+          ])
+
+          const profile = (id: string, name: string) =>
+            Object.entries(packs.find((pack) => pack.id === id)!.profiles).find(([profile]) => profile === name)?.[1]
+          const probes = (id: string) =>
+            (packs.find((pack) => pack.id === id)?.dependencies ?? []).map((dependency) => ({
+              check: [...dependency.check],
+              optional: dependency.optional,
+              profiles: dependency.profiles?.map(String),
+            }))
+          expect(probes("mobile")).toEqual([
+            { check: ["xcodebuild", "-version"], optional: true, profiles: ["ios"] },
+            { check: ["xcrun", "simctl", "list", "-j"], optional: true, profiles: ["ios"] },
+            { check: ["flutter", "--version"], optional: true, profiles: ["ios", "android"] },
+            { check: ["adb", "version"], optional: true, profiles: ["android"] },
+          ])
+          expect(probes("security")).toEqual([
+            { check: ["semgrep", "--version"], optional: true, profiles: ["static"] },
+            { check: ["codeql", "version"], optional: true, profiles: ["static"] },
+            { check: ["gitleaks", "version"], optional: true, profiles: ["static"] },
+            { check: ["osv-scanner", "--version"], optional: true, profiles: ["static"] },
+            { check: ["trivy", "--version"], optional: true, profiles: ["static"] },
+            ...[
+              ["zap.sh", "-version"],
+              ["nuclei", "-version"],
+              ["schemathesis", "--version"],
+              ["nmap", "--version"],
+              ["mitmproxy", "--version"],
+              ["k6", "version"],
+            ].map((check) => ({ check, optional: true, profiles: ["dynamic"] })),
+          ])
+          expect(probes("documents")).toEqual(
+            [
+              ["markitdown", "--version"],
+              ["pdftotext", "-v"],
+              ["tesseract", "--version"],
+              ["ffmpeg", "-version"],
+              ["ffprobe", "-version"],
+            ].map((check) => ({ check, optional: true, profiles: ["default"] })),
+          )
+          expect(probes("github")).toEqual([
+            { check: ["gh", "--version"], optional: true, profiles: ["default"] },
+            { check: ["gh", "auth", "status"], optional: true, profiles: ["default"] },
+          ])
+          expect(probes("deploy")).toEqual([
+            { check: ["docker", "version"], optional: true, profiles: ["core"] },
+            { check: ["docker", "compose", "version"], optional: true, profiles: ["core"] },
+            { check: ["runpodctl", "version"], optional: true, profiles: ["runpod"] },
+            { check: ["wrangler", "--version"], optional: true, profiles: ["cloudflare"] },
+          ])
+
+          for (const pack of packs) {
+            const skillIDs = new Set(pack.skills.map((skill) => skill.name))
+            const runtimeIDs = new Set(pack.runtimes.map((runtime) => runtime.id))
+            for (const profile of Object.values(pack.profiles)) {
+              expect(profile.skills.every((skill) => skillIDs.has(skill))).toBe(true)
+              expect(profile.runtimes.every((runtime) => runtimeIDs.has(runtime))).toBe(true)
+            }
+          }
+
+          expect(profile("mobile", "ios")?.platforms).toEqual(["darwin"])
+          expect(profile("mobile", "android")?.platforms).toEqual(["darwin", "linux"])
+          for (const id of ["security", "deploy"]) {
+            expect((yield* catalog.get(id))?.permissions?.hints?.every((hint) => hint.action === "bash")).toBe(true)
+          }
+          expect(JSON.stringify(packs)).not.toMatch(
+            /(?:authorization|bearer|api[_-]?key|token)["']?\s*[:=]\s*["'][^$]/i,
+          )
+        }),
+      (temporary) => Effect.promise(() => temporary[Symbol.asyncDispose]()),
+    ),
+  )
 })

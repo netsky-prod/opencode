@@ -1206,10 +1206,14 @@ noLLMServer.instance(
         "capability_status",
       ])
       expect(before.capability_search.description).toContain("Search installed capability packs")
+      const enableSchema = before.capability_enable.inputSchema as {
+        jsonSchema?: { properties?: Record<string, unknown> }
+      }
+      expect(Object.keys(enableSchema.jsonSchema?.properties ?? {}).toSorted()).toEqual(["id", "profile", "profiles"])
       const enableFiber = yield* Effect.forkIn(
         Effect.promise(() =>
           before.capability_enable.execute!(
-            { id: "browser", profiles: [] },
+            { id: "browser", profile: "default", profiles: [] },
             capabilityToolOptions("call-enable-browser"),
           ),
         ),

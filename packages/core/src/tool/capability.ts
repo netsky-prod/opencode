@@ -45,6 +45,13 @@ const DependencyHealth = Schema.Struct({
   remediation: Schema.optional(Schema.String.check(Schema.isMaxLength(500))),
 })
 
+const ProfileHealth = Schema.Struct({
+  state: Schema.Literals(["healthy", "degraded", "failed", "unsupported"]),
+  checkedAt: Schema.Number,
+  dependencies: Schema.Array(DependencyHealth).check(Schema.isMaxLength(32)),
+  remediation: Schema.Array(Schema.String.check(Schema.isMaxLength(500))).check(Schema.isMaxLength(32)),
+})
+
 const SearchResult = Schema.Struct({
   id: CapabilityManifest.ID,
   description: Schema.String.check(Schema.isMaxLength(1_000)),
@@ -78,10 +85,12 @@ const CapabilityStatus = Schema.Struct({
   state: Schema.Literals(["installed", "active", "degraded", "failed", "unsupported", "unavailable"]),
   profiles: Schema.Array(CapabilityManifest.ID).check(Schema.isMaxLength(32)),
   checkedAt: Schema.Number,
+  profileStatus: Schema.Record(CapabilityManifest.ID, ProfileHealth),
   remediation: Schema.Array(Schema.String.check(Schema.isMaxLength(500))).check(Schema.isMaxLength(32)),
 })
 
 type DependencyHealth = typeof DependencyHealth.Type
+type ProfileHealth = typeof ProfileHealth.Type
 type EnableOutput = typeof EnableOutput.Type
 type ProfileID = CapabilityManifest.ID
 
@@ -136,9 +145,9 @@ const layer = Layer.effectDiscard(
         })
         .pipe(Effect.mapError(() => new ToolFailure({ message: `Permission denied: ${action}` })))
 
-    const probe = (pack: CapabilityCatalog.Pack) =>
+    const probe = (pack: CapabilityCatalog.Pack, profiles: ReadonlyArray<ProfileID> = compatibleProfiles(pack)) =>
       Effect.forEach(
-        pack.dependencies ?? [],
+        selectedDependencies(pack, profiles),
         (dependency) =>
           Effect.gen(function* () {
             const checkedAt = yield* Clock.currentTimeMillis
@@ -325,7 +334,7 @@ const layer = Layer.effectDiscard(
           yield* dropHeld(key, previous)
           previous = undefined
         }
-        if (!compatible(pack)) {
+        if (!compatible(pack, profiles)) {
           const output = failedOutput(pack, profiles, dependencies, "unsupported")
           failures.set(key, {
             checkedAt: yield* Clock.currentTimeMillis,
@@ -483,7 +492,7 @@ const layer = Layer.effectDiscard(
                   if (!unavailableRequired) return undefined
                 }
                 if (current) yield* dropHeld(key, current)
-                const dependencies = compatible(pack) ? yield* probe(pack) : []
+                const dependencies = compatible(pack, profiles) ? yield* probe(pack, profiles) : []
                 const output = yield* activateLocked(sessionID, pack, profiles, dependencies, false).pipe(Effect.result)
                 return Result.isSuccess(output) && output.success.nextTurn ? undefined : item.id
               }),
@@ -527,13 +536,12 @@ const layer = Layer.effectDiscard(
             }),
         }),
         capability_enable: Tool.make({
-          description: "Enable one installed capability pack for this session. New tools and skills appear next turn.",
+          description:
+            "Enable one installed capability pack for this session. Prefer the singular profile field for one profile; profiles remains supported for multiple profiles. New tools and skills appear next turn.",
           input: Schema.Struct({
             id: CapabilityManifest.ID,
-            profiles: RequestedProfiles.pipe(
-              Schema.optional,
-              Schema.withDecodingDefault(Effect.succeed([CapabilityManifest.ID.make("default")])),
-            ),
+            profile: CapabilityManifest.ID.pipe(Schema.optional),
+            profiles: RequestedProfiles.pipe(Schema.optional),
           }),
           output: EnableOutput,
           execute: (input, context) =>
@@ -556,16 +564,33 @@ const layer = Layer.effectDiscard(
                     ) {
                       yield* dropHeld(key, current)
                     }
+                    const aliases = input.profiles?.length ? input.profiles : undefined
+                    if (aliases && input.profile && (aliases.length !== 1 || aliases[0] !== input.profile)) {
+                      return yield* new ToolFailure({
+                        message: `Conflicting capability profile aliases: profile=${input.profile}, profiles=${aliases.join(",")}`,
+                      })
+                    }
+                    const available = Object.keys(pack.profiles).map((profile) => CapabilityManifest.ID.make(profile))
                     const requested =
-                      input.profiles && input.profiles.length > 0
-                        ? input.profiles
-                        : [CapabilityManifest.ID.make("default")]
+                      aliases ??
+                      (input.profile
+                        ? [input.profile]
+                        : Object.hasOwn(pack.profiles, "default")
+                          ? [CapabilityManifest.ID.make("default")]
+                          : available.length === 1
+                            ? available
+                            : undefined)
+                    if (!requested) {
+                      return yield* new ToolFailure({
+                        message: `Capability ${input.id} requires a profile. Available profiles: ${available.join(", ")}`,
+                      })
+                    }
                     const profiles = validProfiles(pack, requested)
                     if (!profiles) {
                       const missing = requested.find((profile) => !Object.hasOwn(pack.profiles, profile)) ?? "default"
                       return yield* new ToolFailure({ message: `Capability profile not found: ${input.id}/${missing}` })
                     }
-                    const dependencies = compatible(pack) ? yield* probe(pack) : []
+                    const dependencies = compatible(pack, profiles) ? yield* probe(pack, profiles) : []
                     return yield* activateLocked(context.sessionID, pack, profiles, dependencies, true, context.agent)
                   }),
                 ),
@@ -615,47 +640,73 @@ const layer = Layer.effectDiscard(
                   const dependencies = yield* probe(pack)
                   const profiles = activation ? validProfiles(pack, activation.profiles) : undefined
                   const fingerprint = manifestFingerprint(pack)
-                  const runtimeStatuses = yield* Effect.forEach(selectedRuntimes(pack, profiles ?? []), (definition) =>
-                    runtime.status(runtimeKey(pack.id, definition, fingerprint)),
+                  const selectedRuntimeDefinitions = selectedRuntimes(pack, profiles ?? [])
+                  const runtimeStatuses = yield* Effect.forEach(selectedRuntimeDefinitions, (definition) =>
+                    runtime
+                      .status(runtimeKey(pack.id, definition, fingerprint))
+                      .pipe(Effect.map((status) => [definition.id, status] as const)),
+                  )
+                  const runtimeByID = new Map(runtimeStatuses)
+                  const profileStatus = Object.fromEntries(
+                    Object.keys(pack.profiles).map((profile) => {
+                      const id = CapabilityManifest.ID.make(profile)
+                      const selected = profiles?.includes(id) === true
+                      return [
+                        id,
+                        statusForProfile(
+                          pack,
+                          id,
+                          dependencies,
+                          selected
+                            ? (pack.profiles[id]?.runtimes ?? []).flatMap((runtimeID) => {
+                                const status = runtimeByID.get(runtimeID)
+                                return status ? [status] : []
+                              })
+                            : [],
+                        ),
+                      ]
+                    }),
                   )
                   const remembered = failures.get(activationKey(context.sessionID, pack.id))
                   const checkedAt = Math.max(
                     remembered?.checkedAt ?? 0,
                     ...dependencies.map((dependency) => dependency.checkedAt),
-                    ...runtimeStatuses.map((item) => item.updatedAt),
+                    ...runtimeStatuses.map(([, status]) => status.updatedAt),
                   )
-                  const missing = dependencies.filter((dependency) => dependency.state !== "available")
-                  const missingRequired = missing.some((item) => item.state === "missing")
                   const invalidProfiles = activation !== undefined && profiles === undefined
-                  const failed =
-                    missingRequired ||
-                    runtimeStatuses.some((item) => item.state === "failed") ||
-                    remembered !== undefined
-                  const degraded =
-                    activation?.state === "degraded" ||
-                    runtimeStatuses.some((item) => item.state === "degraded") ||
-                    missing.some((item) => item.state === "optional-missing")
+                  const selectedStates = profiles?.map((profile) => profileStatus[profile]?.state) ?? []
+                  const compatibleStates = Object.values(profileStatus)
+                    .map((status) => status.state)
+                    .filter((status) => status !== "unsupported")
+                  const failed = selectedStates.includes("failed") || remembered !== undefined
+                  const degraded = activation?.state === "degraded" || selectedStates.includes("degraded")
+                  const inactiveState = compatibleStates.some((state) => state === "healthy" || state === "degraded")
+                    ? ("installed" as const)
+                    : compatibleStates.includes("failed")
+                      ? ("failed" as const)
+                      : ("unsupported" as const)
                   const currentState = !compatible(pack)
                     ? ("unsupported" as const)
                     : invalidProfiles
                       ? ("unavailable" as const)
                       : activation
-                        ? failed
-                          ? ("failed" as const)
-                          : degraded
-                            ? ("degraded" as const)
-                            : ("active" as const)
-                        : failed
-                          ? ("failed" as const)
-                          : ("installed" as const)
+                        ? selectedStates.includes("unsupported")
+                          ? ("unsupported" as const)
+                          : failed
+                            ? ("failed" as const)
+                            : degraded
+                              ? ("degraded" as const)
+                              : ("active" as const)
+                        : inactiveState
+                  const relevantProfileStatuses = activation
+                    ? (profiles ?? []).flatMap((profile) => {
+                        const status = profileStatus[profile]
+                        return status ? [status] : []
+                      })
+                    : Object.values(profileStatus)
                   const remediation = [
                     ...(remembered?.remediation ?? []),
-                    ...missing.flatMap((dependency) => dependency.remediation ?? []),
-                    ...(runtimeStatuses.some((item) => item.state === "failed")
-                      ? [
-                          `Retry capability_enable for ${pack.id}; if it still fails, verify the runtime command and credentials.`,
-                        ]
-                      : []),
+                    ...relevantProfileStatuses.flatMap((status) => status.remediation),
                     ...(invalidProfiles
                       ? [`Select profiles currently declared by ${pack.id}, or disable the stale activation.`]
                       : []),
@@ -668,6 +719,7 @@ const layer = Layer.effectDiscard(
                     state: currentState,
                     profiles: (activation?.profiles ?? []).map((profile) => CapabilityManifest.ID.make(profile)),
                     checkedAt: checkedAt || (yield* Clock.currentTimeMillis),
+                    profileStatus,
                     remediation: [...new Set(remediation)],
                   }
                 }),
@@ -680,6 +732,7 @@ const layer = Layer.effectDiscard(
                   state: "unavailable" as const,
                   profiles: activation.profiles.map((profile) => CapabilityManifest.ID.make(profile)),
                   checkedAt: 0,
+                  profileStatus: {},
                   remediation: [
                     `Restore the installed manifest for ${activation.id}, or disable the stale activation.`,
                   ],
@@ -800,9 +853,22 @@ function distinct<T>(value: T, index: number, values: ReadonlyArray<T>) {
   return values.indexOf(value) === index
 }
 
-function compatible(pack: CapabilityCatalog.Pack) {
-  if (process.platform !== "darwin" && process.platform !== "linux") return false
-  return pack.platforms.includes(process.platform)
+function compatible(pack: CapabilityCatalog.Pack, profiles?: ReadonlyArray<ProfileID>) {
+  const platform = process.platform
+  if (platform !== "darwin" && platform !== "linux") return false
+  const selected = profiles ?? Object.keys(pack.profiles).map((profile) => CapabilityManifest.ID.make(profile))
+  if (profiles) return selected.every((profile) => profilePlatforms(pack, profile).includes(platform))
+  return selected.some((profile) => profilePlatforms(pack, profile).includes(platform))
+}
+
+function compatibleProfiles(pack: CapabilityCatalog.Pack) {
+  return Object.keys(pack.profiles)
+    .map((profile) => CapabilityManifest.ID.make(profile))
+    .filter((profile) => compatible(pack, [profile]))
+}
+
+function profilePlatforms(pack: CapabilityCatalog.Pack, profile: ProfileID) {
+  return pack.profiles[profile]?.platforms ?? pack.platforms
 }
 
 function validProfiles(
@@ -816,6 +882,53 @@ function validProfiles(
 function selectedRuntimes(pack: CapabilityCatalog.Pack, profiles: ReadonlyArray<ProfileID>) {
   const selected = new Set(profiles.flatMap((profile) => pack.profiles[profile]?.runtimes ?? []))
   return pack.runtimes.filter((runtime) => selected.has(runtime.id))
+}
+
+function selectedDependencies(pack: CapabilityCatalog.Pack, profiles: ReadonlyArray<ProfileID>) {
+  const selected = new Set(profiles)
+  return (pack.dependencies ?? []).filter(
+    (dependency) => dependency.profiles === undefined || dependency.profiles.some((profile) => selected.has(profile)),
+  )
+}
+
+function statusForProfile(
+  pack: CapabilityCatalog.Pack,
+  profile: ProfileID,
+  dependencies: ReadonlyArray<DependencyHealth>,
+  runtimes: ReadonlyArray<CapabilityRuntime.Status>,
+): ProfileHealth {
+  if (!compatible(pack, [profile])) {
+    return {
+      state: "unsupported",
+      checkedAt: 0,
+      dependencies: [],
+      remediation: [
+        `Use ${pack.id}/${profile} on one of its supported platforms: ${profilePlatforms(pack, profile).join(", ")}.`,
+      ],
+    }
+  }
+  const selected = new Set(selectedDependencies(pack, [profile]).map((dependency) => dependency.id))
+  const health = dependencies.filter((dependency) => selected.has(dependency.id))
+  const failed =
+    health.some((dependency) => dependency.state === "missing") || runtimes.some((item) => item.state === "failed")
+  const degraded =
+    health.some((dependency) => dependency.state === "optional-missing") ||
+    runtimes.some((item) => item.state === "degraded")
+  return {
+    state: failed ? "failed" : degraded ? "degraded" : "healthy",
+    checkedAt: Math.max(
+      0,
+      ...health.map((dependency) => dependency.checkedAt),
+      ...runtimes.map((item) => item.updatedAt),
+    ),
+    dependencies: health,
+    remediation: [
+      ...health.flatMap((dependency) => dependency.remediation ?? []),
+      ...(runtimes.some((item) => item.state === "failed")
+        ? [`Retry capability_enable for ${pack.id}/${profile}; if it still fails, verify its runtime configuration.`]
+        : []),
+    ],
+  }
 }
 
 function selectedSkills(pack: CapabilityCatalog.Pack, profiles: ReadonlyArray<ProfileID>) {
@@ -853,7 +966,11 @@ function failedOutput(
     dependencies,
     remediation:
       state === "unsupported"
-        ? [`Use ${pack.id} on one of its supported platforms: ${pack.platforms.join(", ")}.`]
+        ? [
+            `Use ${pack.id}/${profiles.join(",")} on one of its supported platforms: ${[
+              ...new Set(profiles.flatMap((profile) => profilePlatforms(pack, profile))),
+            ].join(", ")}.`,
+          ]
         : [
             ...dependencies.flatMap((dependency) => dependency.remediation ?? []),
             `Retry capability_enable for ${pack.id} after resolving its required runtime health.`,

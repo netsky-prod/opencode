@@ -1,0 +1,28 @@
+{
+  "id": "documents",
+  "version": 1,
+  "description": "Extract and verify facts from documents, images, audio, and video with bounded model context.",
+  "platforms": ["darwin", "linux"],
+  "skills": [
+    {
+      "name": "document-analysis",
+      "description": "Select text extraction, OCR, or media inspection paths and preserve complete large results as artifacts.",
+      "path": "documents.md"
+    }
+  ],
+  "runtimes": [],
+  "profiles": {
+    "default": {
+      "description": "Convert documents, extract PDF text, OCR images, and inspect audio or video metadata.",
+      "skills": ["document-analysis"],
+      "runtimes": []
+    }
+  },
+  "dependencies": [
+    { "id": "markitdown", "check": ["markitdown", "--version"], "optional": true, "profiles": ["default"] },
+    { "id": "pdftotext", "check": ["pdftotext", "-v"], "optional": true, "profiles": ["default"] },
+    { "id": "tesseract", "check": ["tesseract", "--version"], "optional": true, "profiles": ["default"] },
+    { "id": "ffmpeg", "check": ["ffmpeg", "-version"], "optional": true, "profiles": ["default"] },
+    { "id": "ffprobe", "check": ["ffprobe", "-version"], "optional": true, "profiles": ["default"] }
+  ]
+}
