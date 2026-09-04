@@ -327,6 +327,35 @@ describe("CapabilityTool", () => {
       if (result.type === "json") {
         expect((result.value as { capabilities: unknown[] }).capabilities).toHaveLength(10)
       }
+      const searchPermission = permissionRequests.at(-1)
+      expect({
+        action: searchPermission?.action,
+        resources: searchPermission?.resources,
+        save: searchPermission?.save,
+      }).toEqual({ action: "capability_search", resources: ["browser testing"], save: ["browser testing"] })
+    }),
+  )
+
+  it.effect("authorizes capability status without offering wildcard persistence", () =>
+    Effect.gen(function* () {
+      reset()
+      yieldRegistry = yield* ToolRegistry.Service
+
+      yield* call("capability_status", { id: "browser" })
+      const one = permissionRequests.at(-1)
+      expect({ action: one?.action, resources: one?.resources, save: one?.save }).toEqual({
+        action: "capability_status",
+        resources: ["browser"],
+        save: ["browser"],
+      })
+
+      yield* call("capability_status", {})
+      const all = permissionRequests.at(-1)
+      expect({ action: all?.action, resources: all?.resources, save: all?.save }).toEqual({
+        action: "capability_status",
+        resources: ["*"],
+        save: undefined,
+      })
     }),
   )
 

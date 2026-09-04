@@ -3,6 +3,9 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js"
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js"
 
+const startMarker = process.env.OPENCODE_TEST_BROWSER_START_MARKER
+if (startMarker) appendFileSync(startMarker, "started\n")
+
 const screenshot = Uint8Array.from(
   atob("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="),
   (character) => character.charCodeAt(0),

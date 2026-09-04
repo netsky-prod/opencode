@@ -607,15 +607,22 @@ function coreTool(
             abortSignal: options.abortSignal,
             permission: {
               assert: (request) =>
-                permission.ask({
-                  permission: request.action,
-                  metadata: request.metadata ?? {},
-                  patterns: [...request.resources],
-                  always: [...(request.save ?? [])],
-                  sessionID: input.session.id,
-                  tool: { messageID: input.processor.message.id, callID: options.toolCallId },
-                  ruleset: Permission.merge(input.agent.permission, input.session.permission ?? []),
-                }),
+                permission
+                  .ask({
+                    permission: request.action,
+                    metadata: request.metadata ?? {},
+                    patterns: [...request.resources],
+                    always: [...(request.save ?? [])],
+                    sessionID: input.session.id,
+                    tool: { messageID: input.processor.message.id, callID: options.toolCallId },
+                    ruleset: Permission.merge(input.agent.permission, input.session.permission ?? []),
+                  })
+                  .pipe(
+                    Effect.catchTags({
+                      PermissionRejectedError: (error) => Effect.die(error),
+                      PermissionCorrectedError: (error) => Effect.die(error),
+                    }),
+                  ),
             },
           })
           if (settlement.result.type === "error") throw new Error(resultText(settlement.result.value))

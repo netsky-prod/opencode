@@ -334,11 +334,12 @@ const useServerConfig = Effect.fn("test.useServerConfig")(function* (config: (ur
   return { dir, llm }
 })
 
-function capabilityFixturePath(directory: string, closeMarker?: string) {
+function capabilityFixturePath(directory: string, closeMarker?: string, startMarker?: string) {
   return Effect.acquireRelease(
     Effect.promise(async () => {
       const previous = process.env.PATH
       const previousMarker = process.env.OPENCODE_TEST_BROWSER_CLOSE_MARKER
+      const previousStartMarker = process.env.OPENCODE_TEST_BROWSER_START_MARKER
       const bin = path.join(directory, "capability-bin")
       const npx = path.join(bin, "npx")
       const node = path.join(bin, "node")
@@ -357,14 +358,17 @@ function capabilityFixturePath(directory: string, closeMarker?: string) {
       await fs.chmod(node, 0o755)
       process.env.PATH = `${bin}${path.delimiter}${previous ?? ""}`
       if (closeMarker) process.env.OPENCODE_TEST_BROWSER_CLOSE_MARKER = closeMarker
-      return { previous, previousMarker }
+      if (startMarker) process.env.OPENCODE_TEST_BROWSER_START_MARKER = startMarker
+      return { previous, previousMarker, previousStartMarker }
     }),
-    ({ previous, previousMarker }) =>
+    ({ previous, previousMarker, previousStartMarker }) =>
       Effect.sync(() => {
         if (previous === undefined) delete process.env.PATH
         else process.env.PATH = previous
         if (previousMarker === undefined) delete process.env.OPENCODE_TEST_BROWSER_CLOSE_MARKER
         else process.env.OPENCODE_TEST_BROWSER_CLOSE_MARKER = previousMarker
+        if (previousStartMarker === undefined) delete process.env.OPENCODE_TEST_BROWSER_START_MARKER
+        else process.env.OPENCODE_TEST_BROWSER_START_MARKER = previousStartMarker
       }),
   )
 }
@@ -1421,6 +1425,262 @@ noLLMServer.instance(
       yield* pollWithTimeout(
         Effect.promise(() => Bun.file(closeMarker).exists()).pipe(Effect.map((exists) => (exists ? true : undefined))),
         "capability browser process was not closed after the turn lease released",
+      )
+    }),
+  { config: cfg },
+  10_000,
+)
+
+noLLMServer.instance(
+  "bridges exact capability discovery permissions without persisting wildcard status access",
+  () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const agents = yield* AgentSvc.Service
+      const providers = yield* ProviderSvc.Service
+      const permissions = yield* Permission.Service
+      const session = yield* sessions.create({
+        title: "Capability discovery permissions",
+        permission: [
+          { permission: "capability_status", pattern: "*", action: "ask" },
+          { permission: "capability_search", pattern: "*", action: "ask" },
+        ],
+      })
+      const turn = yield* seed(session.id)
+      const agent = yield* agents.get("build")
+      const model = yield* providers.getModel(ref.providerID, ref.modelID)
+      const scope = yield* Scope.make()
+      const tools = yield* SessionTools.resolve({
+        agent,
+        model,
+        session,
+        processor: {
+          message: turn.assistant,
+          updateToolCall: () => Effect.succeed(undefined),
+          completeToolCall: () => Effect.void,
+        },
+        bypassAgentCheck: false,
+        messages: [],
+        promptOps: {
+          cancel: () => Effect.void,
+          resolvePromptParts: (template: string) => Effect.succeed([{ type: "text" as const, text: template }]),
+          prompt: () => Effect.die("unexpected nested prompt"),
+        },
+      }).pipe(Effect.provideService(Scope.Scope, scope))
+      const executeAndRequest = (name: "capability_status" | "capability_search", args: Record<string, unknown>) =>
+        Effect.gen(function* () {
+          const fiber = yield* Effect.forkIn(
+            Effect.promise(() => tools[name].execute!(args, capabilityToolOptions(`call-${name}`))),
+            scope,
+          )
+          const request = yield* pollWithTimeout(
+            permissions.list().pipe(Effect.map((items) => items.find((item) => item.sessionID === session.id))),
+            `${name} permission request was not emitted`,
+          )
+          return { fiber, request }
+        })
+
+      const all = yield* executeAndRequest("capability_status", {})
+      expect({
+        permission: all.request.permission,
+        patterns: all.request.patterns,
+        always: all.request.always,
+      }).toEqual({ permission: "capability_status", patterns: ["*"], always: [] })
+      yield* permissions.reply({ requestID: all.request.id, reply: "always" })
+      yield* awaitWithTimeout(Fiber.join(all.fiber), "wildcard capability status did not settle")
+
+      const one = yield* executeAndRequest("capability_status", { id: "browser" })
+      expect({
+        permission: one.request.permission,
+        patterns: one.request.patterns,
+        always: one.request.always,
+      }).toEqual({ permission: "capability_status", patterns: ["browser"], always: ["browser"] })
+      yield* permissions.reply({ requestID: one.request.id, reply: "once" })
+      yield* awaitWithTimeout(Fiber.join(one.fiber), "specific capability status did not settle")
+
+      const search = yield* executeAndRequest("capability_search", { query: "browser testing" })
+      expect({
+        permission: search.request.permission,
+        patterns: search.request.patterns,
+        always: search.request.always,
+      }).toEqual({
+        permission: "capability_search",
+        patterns: ["browser testing"],
+        always: ["browser testing"],
+      })
+      yield* permissions.reply({ requestID: search.request.id, reply: "once" })
+      yield* awaitWithTimeout(Fiber.join(search.fiber), "capability search did not settle")
+      yield* Scope.close(scope, Exit.void)
+    }),
+  { config: cfg },
+  10_000,
+)
+
+it.instance(
+  "rejecting a bridged capability permission stops the provider loop without activating the pack",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig(providerCfg)
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const permissions = yield* Permission.Service
+      const agents = yield* AgentSvc.Service
+      const providers = yield* ProviderSvc.Service
+      const session = yield* sessions.create({
+        title: "Reject bridged capability",
+        permission: [
+          { permission: "capability_enable", pattern: "browser", action: "ask" },
+          { permission: "capability_status", pattern: "browser", action: "allow" },
+        ],
+      })
+      yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "Enable browser capability" }],
+      })
+      yield* llm.tool("capability_enable", { id: "browser", profiles: ["default"] })
+
+      const loop = yield* prompt.loop({ sessionID: session.id }).pipe(Effect.forkChild)
+      const request = yield* pollWithTimeout(
+        permissions.list().pipe(Effect.map((items) => items.find((item) => item.sessionID === session.id))),
+        "bridged capability permission request was not emitted",
+      )
+      yield* permissions.reply({ requestID: request.id, reply: "reject" })
+      const result = yield* awaitWithTimeout(Fiber.join(loop), "rejected provider turn did not stop")
+
+      expect(yield* llm.calls).toBe(1)
+      expect((yield* permissions.list()).filter((item) => item.sessionID === session.id)).toEqual([])
+      expect(errorTool(result.parts)?.state.error).toContain("rejected permission")
+      if (result.info.role !== "assistant") throw new Error("expected rejected assistant turn")
+
+      const agent = yield* agents.get("build")
+      const model = yield* providers.getModel(ref.providerID, ref.modelID)
+      const scope = yield* Scope.make()
+      const tools = yield* SessionTools.resolve({
+        agent,
+        model,
+        session,
+        processor: {
+          message: result.info,
+          updateToolCall: () => Effect.succeed(undefined),
+          completeToolCall: () => Effect.void,
+        },
+        bypassAgentCheck: false,
+        messages: [],
+        promptOps: {
+          cancel: () => Effect.void,
+          resolvePromptParts: (template: string) => Effect.succeed([{ type: "text" as const, text: template }]),
+          prompt: () => Effect.die("unexpected nested prompt"),
+        },
+      }).pipe(Effect.provideService(Scope.Scope, scope))
+      const status = yield* Effect.promise(() =>
+        tools.capability_status.execute!({ id: "browser" }, capabilityToolOptions("call-status-after-reject")),
+      )
+      expect(status).toMatchObject({
+        metadata: { structured: { capabilities: [{ id: "browser", profiles: [] }] } },
+      })
+      yield* Scope.close(scope, Exit.void)
+    }),
+  { config: cfg },
+  10_000,
+)
+
+noLLMServer.instance(
+  "rehydrates persisted capability activation after the location runtime is rebuilt",
+  () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const closeMarker = path.join(test.directory, "capability-rehydrate-closed")
+      const startMarker = path.join(test.directory, "capability-rehydrate-started")
+      yield* capabilityFixturePath(test.directory, closeMarker, startMarker)
+      const sessions = yield* Session.Service
+      const agents = yield* AgentSvc.Service
+      const providers = yield* ProviderSvc.Service
+      const locations = yield* LocationServiceMap.Service
+      const system = yield* SystemPrompt.Service
+      const session = yield* sessions.create({
+        title: "Capability rehydration",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      const turn = yield* seed(session.id)
+      const agent = yield* agents.get("build")
+      const model = yield* providers.getModel(ref.providerID, ref.modelID)
+      const refKey = CoreLocation.Ref.make({
+        directory: AbsolutePath.make(session.directory),
+        workspaceID: session.workspaceID,
+      })
+      const resolveTools = (scope: Scope.Closeable) =>
+        SessionTools.resolve({
+          agent,
+          model,
+          session,
+          processor: {
+            message: turn.assistant,
+            updateToolCall: () => Effect.succeed(undefined),
+            completeToolCall: () => Effect.void,
+          },
+          bypassAgentCheck: false,
+          messages: [],
+          promptOps: {
+            cancel: () => Effect.void,
+            resolvePromptParts: (template: string) => Effect.succeed([{ type: "text" as const, text: template }]),
+            prompt: () => Effect.die("unexpected nested prompt"),
+          },
+        }).pipe(Effect.provideService(Scope.Scope, scope))
+
+      const firstScope = yield* Scope.make()
+      const first = yield* resolveTools(firstScope)
+      yield* Effect.promise(() =>
+        first.capability_enable.execute!(
+          { id: "browser", profiles: ["default"] },
+          capabilityToolOptions("call-enable-rehydrate-browser"),
+        ),
+      )
+      const active = yield* resolveTools(firstScope)
+      expect(active.browser_playwright_browser_snapshot).toBeDefined()
+      yield* pollWithTimeout(
+        Effect.promise(() => Bun.file(startMarker).exists()).pipe(Effect.map((exists) => (exists ? true : undefined))),
+        "initial capability runtime did not start",
+      )
+
+      yield* Scope.close(firstScope, Exit.void)
+      yield* locations.invalidate(refKey)
+      yield* pollWithTimeout(
+        Effect.promise(() => Bun.file(closeMarker).exists()).pipe(Effect.map((exists) => (exists ? true : undefined))),
+        "initial capability runtime did not close",
+      )
+
+      const secondScope = yield* Scope.make()
+      const rehydrated = yield* resolveTools(secondScope)
+      expect(
+        Object.keys(rehydrated)
+          .filter((name) => name.startsWith("browser_"))
+          .toSorted(),
+      ).toEqual([
+        "browser_playwright_browser_navigate",
+        "browser_playwright_browser_snapshot",
+        "browser_playwright_browser_take_screenshot",
+      ])
+      expect(yield* system.skills(agent, session)).toContain("<name>browser-testing</name>")
+      yield* pollWithTimeout(
+        Effect.promise(async () => {
+          if (!(await Bun.file(startMarker).exists())) return undefined
+          return (await Bun.file(startMarker).text()).trim().split("\n").length === 2 ? true : undefined
+        }),
+        "persisted capability runtime did not restart exactly once",
+      )
+      const starts = yield* Effect.promise(() => Bun.file(startMarker).text())
+      expect(starts.trim().split("\n")).toHaveLength(2)
+
+      yield* Scope.close(secondScope, Exit.void)
+      yield* locations.invalidate(refKey)
+      yield* pollWithTimeout(
+        Effect.promise(async () => {
+          if (!(await Bun.file(closeMarker).exists())) return undefined
+          return (await Bun.file(closeMarker).text()).trim().split("\n").length === 2 ? true : undefined
+        }),
+        "rehydrated capability runtime did not close",
       )
     }),
   { config: cfg },

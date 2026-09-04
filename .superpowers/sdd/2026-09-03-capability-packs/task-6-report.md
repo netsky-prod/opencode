@@ -137,3 +137,24 @@ git diff --check: exit 0
 ```
 
 The live Qwen gate remains intentionally delegated to the root agent.
+
+## Live-Gate Bridge Review Fix Round 2
+
+The permission bridge now distinguishes interactive rejection from configured denial. A user `reply=reject` (or corrected rejection with feedback) is preserved as the original permission defect across Core settlement, so the AI SDK emits the original error object and `SessionProcessor` takes its normal blocked-turn path. Static rule denial remains a model-facing tool failure. The provider-loop regression was written first and failed with two LLM requests; it now stops after the first rejected tool call, clears the pending request, and leaves the capability unactivated.
+
+Capability management authorization no longer offers wildcard persistence. `capability_status` without an ID still authorizes the legitimate read-all resource `*`, but omits Core `save`, which the legacy bridge exposes as an empty `always` list. Status for a concrete pack and search retain their exact concrete save resources. Both Core and real legacy permission requests assert these shapes, including an `always` reply followed by another status request to prove no wildcard approval was persisted.
+
+A provider-turn lifecycle regression now closes the first turn scope, invalidates the location service map, observes the shipped Playwright fixture process close, and resolves a second turn for the same persisted session. The active browser pack rehydrates with all three runtime schemas and its skill guidance. Start and close markers each contain exactly two entries, proving one runtime owner per map generation with no duplicate process.
+
+Round-2 verification:
+
+```text
+packages/core capability/plugin/location/runtime: 56 passed, 0 failed
+packages/opencode capability/prompt/system: 79 passed, 1 pre-existing skip, 0 failed
+packages/core: tsgo --noEmit exit 0
+packages/opencode: tsgo --noEmit exit 0
+targeted oxlint: 0 errors (pre-existing warnings only)
+Prettier and git diff --check: exit 0
+```
+
+The live Qwen gate was not rerun in this worker, as requested; the root agent owns that rerun after review.

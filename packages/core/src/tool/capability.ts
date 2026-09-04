@@ -114,12 +114,17 @@ const layer = Layer.effectDiscard(
     const shared = new Map<string, SharedRegistration>()
     const failures = new Map<string, { readonly checkedAt: number; readonly remediation: ReadonlyArray<string> }>()
 
-    const authorize = (context: Tool.Context, action: string, resource: string) =>
+    const authorize = (
+      context: Tool.Context,
+      action: string,
+      resources: ReadonlyArray<string>,
+      save = resources.filter((resource) => resource !== "*"),
+    ) =>
       (context.permission ?? permission)
         .assert({
           action,
-          resources: [resource],
-          save: [resource],
+          resources,
+          ...(save.length > 0 ? { save } : {}),
           sessionID: context.sessionID,
           agent: context.agent,
           source: {
@@ -498,7 +503,7 @@ const layer = Layer.effectDiscard(
           }),
           execute: (input, context) =>
             Effect.gen(function* () {
-              yield* authorize(context, "capability_search", input.query)
+              yield* authorize(context, "capability_search", [input.query])
               const active = new Set((yield* state.list(context.sessionID)).map((item) => item.id))
               const matches = (yield* catalog.search(input.query, active)).slice(0, MAX_SEARCH_RESULTS)
               return {
@@ -531,7 +536,7 @@ const layer = Layer.effectDiscard(
           }),
           output: EnableOutput,
           execute: (input, context) =>
-            authorize(context, "capability_enable", input.id).pipe(
+            authorize(context, "capability_enable", [input.id]).pipe(
               Effect.andThen(
                 locks.withLock(activationKey(context.sessionID, input.id))(
                   Effect.gen(function* () {
@@ -572,7 +577,7 @@ const layer = Layer.effectDiscard(
             nextTurn: Schema.Boolean,
           }),
           execute: (input, context) =>
-            authorize(context, "capability_disable", input.id).pipe(
+            authorize(context, "capability_disable", [input.id]).pipe(
               Effect.andThen(
                 locks.withLock(activationKey(context.sessionID, input.id))(
                   Effect.uninterruptible(
@@ -596,7 +601,7 @@ const layer = Layer.effectDiscard(
           output: Schema.Struct({ capabilities: Schema.Array(CapabilityStatus).check(Schema.isMaxLength(256)) }),
           execute: (input, context) =>
             Effect.gen(function* () {
-              yield* authorize(context, "capability_status", input.id ?? "*")
+              yield* authorize(context, "capability_status", [input.id ?? "*"])
               const installed = (yield* catalog.list()).filter((pack) => input.id === undefined || pack.id === input.id)
               const activations = yield* state.status(context.sessionID)
               const active = new Map(activations.map((item) => [item.id, item]))
