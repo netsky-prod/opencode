@@ -35,6 +35,23 @@ git diff --check
 exit 0
 ```
 
+## Root-Owned Live Qwen Acceptance
+
+The final production-path gate used two separate `opencode run` processes with `runpod-qwen/qwen3.8-27b` and the same persisted Session ID.
+
+In the first process, Qwen read `status.txt` as `PENDING`, created one adaptive loop with the objective `Wait until status.txt equals READY`, the exact acceptance criterion, a verified observation with evidence, the fixture artifact, and next action `Re-read status.txt on the next wake`. It then called `loop_list` and verified the stored summary without completing or deleting the loop.
+
+In the second process after restart, Qwen first called `loop_list` and recovered the same objective and next action. It then called `loop_checkpoint` with only a new decision, called `loop_list` again to verify the partial merge preserved the omitted checkpoint fields, and deleted the loop. Both traces used the same Session ID, contain zero tool errors and no `goal_*` calls, and left no OpenCode process or durable test loop behind.
+
+Evidence:
+
+```text
+live/slice-2/checkpoint-create.jsonl
+live/slice-2/checkpoint-restart.jsonl
+```
+
+Task 7 is accepted end to end.
+
 ## Concerns
 
 - Scheduler prompt rendering and compacted-session context injection are deliberately deferred to Task 8. This task exposes checkpoint data and a typed corrupt-storage diagnostic while leaving wake rendering unchanged.
