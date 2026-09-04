@@ -152,6 +152,35 @@ Prettier and git diff --check: exit 0
 
 The live Qwen gate was not rerun in this worker, as requested.
 
+## Root-Owned Live Qwen Acceptance
+
+Both production-path gates passed with `runpod-qwen/qwen3.8-27b` through `opencode run`; global browser/research MCP substitutes were disabled so the model had to discover, enable, use, and disable the shipped capability packs.
+
+### Browser gate
+
+Qwen enabled `browser/default`, repaired a deliberately broken selector in a local fixture, navigated with the exact shipped Playwright MCP command, observed the transition from `Not saved` to `Saved`, captured a 1280×720 PNG, independently read the final DOM state as `Saved`, and disabled the capability. It used no diagnostics runtime and produced zero tool errors. No browser or OpenCode runtime process remained afterward.
+
+Evidence:
+
+```text
+live/slice-1/browser-qwen-final.jsonl
+live/slice-1/browser-fixture/browser-verified-final.png
+PNG SHA-256: df2a7974cc993ad237fc88537e818c0026f90238e8627c0d6fd6ab32d239bd5b
+```
+
+### Research gate
+
+Qwen enabled only `research/default`, queried the shipped Federated Research MCP, resolved and queried official TypeScript SDK documentation through Context7, fetched decisive primary sources with built-in `webfetch`, and wrote and reread a 191-line report. The trace contains 24 completed tool calls and zero tool errors. The report contains the required normative/observed/inferred/uncertain separation, recommendation, citation table, and evidence ledger. Independent validation found 14 unique cited URLs and received HTTP 200 from all 14. Neither the resolved bearer value nor an authorization header appears in the report. The capability was disabled and no OpenCode or MCP process remained afterward.
+
+Evidence:
+
+```text
+live/slice-1/research-qwen-final.jsonl
+live/slice-1/research-fixture/research-report.md
+```
+
+Task 6 is accepted end to end.
+
 ## Live-Gate Bridge Review Fix
 
 The first bridge review found four provider-turn integration defects, each reproduced before its fix at the real legacy `SessionTools.resolve` boundary:
