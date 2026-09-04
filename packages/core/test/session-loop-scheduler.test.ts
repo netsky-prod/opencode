@@ -13,6 +13,7 @@ import { AbsolutePath } from "@opencode-ai/core/schema"
 import { SessionV2 } from "@opencode-ai/core/session"
 import { SessionLoop } from "@opencode-ai/core/session/loop"
 import { SessionLoopScheduler } from "@opencode-ai/core/session/loop-scheduler"
+import { SessionLoopDispatch } from "@opencode-ai/core/session/loop-dispatch"
 import { SessionLoopTable, SessionTable } from "@opencode-ai/core/session/sql"
 import { tmpdir } from "./fixture/tmpdir"
 import { testEffect } from "./lib/effect"
@@ -33,7 +34,7 @@ function schedulerNode(startBackground: boolean) {
   return makeGlobalNode({
     service: SessionLoopScheduler.Service,
     layer: SessionLoopScheduler.makeLayer({ owner: "scheduler-test", startBackground }),
-    deps: [SessionLoop.node, SessionV2.node],
+    deps: [SessionLoop.node, SessionLoopDispatch.node],
   })
 }
 

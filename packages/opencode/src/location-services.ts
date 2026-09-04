@@ -7,8 +7,13 @@ import {
   LocationServiceMap,
 } from "@opencode-ai/core/location-services"
 import { adapterNode } from "./capability/runtime"
+import { InstanceStore } from "./project/instance-store"
+import { InstanceBootstrap } from "./project/bootstrap"
 
-const replacements: LayerNode.Replacements = [[CoreCapabilityRuntime.node, adapterNode]]
+const replacements: LayerNode.Replacements = [
+  [CoreCapabilityRuntime.node, adapterNode],
+  [InstanceStore.bootstrapNode, InstanceBootstrap.node],
+]
 
 export const locationServices = LayerNode.hoist(coreLocationServices, Node.tags.values.global, replacements)
 export const locationServiceMapLayer = buildLocationServiceMap(replacements)

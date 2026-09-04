@@ -2,7 +2,7 @@ export * as SessionLoopScheduler from "./loop-scheduler"
 
 import { Cause, Clock, Context, Effect, Layer, Schedule } from "effect"
 import { makeGlobalNode } from "../effect/app-node"
-import { SessionV2 } from "../session"
+import { SessionLoopDispatch } from "./loop-dispatch"
 import { SessionLoop } from "./loop"
 
 const DEFAULT_BATCH_SIZE = 32
@@ -106,7 +106,7 @@ export function makeLayer(
     Service,
     Effect.gen(function* () {
       const loops = yield* SessionLoop.Service
-      const sessions = yield* SessionV2.Service
+      const sessions = yield* SessionLoopDispatch.Service
       const owner = options.owner ?? crypto.randomUUID()
       const batchSize = options.batchSize ?? DEFAULT_BATCH_SIZE
       const leaseMs = options.leaseMs ?? DEFAULT_LEASE_MS
@@ -114,6 +114,7 @@ export function makeLayer(
       const tick = Effect.gen(function* () {
         const now = yield* Clock.currentTimeMillis
         yield* loops.reconcilePending(now)
+        yield* sessions.recover
         const claims = yield* loops.claimDue({ owner, now, leaseMs, limit: batchSize })
         yield* Effect.forEach(
           claims,
@@ -126,7 +127,14 @@ export function makeLayer(
                 delivery: "queue",
               })
               .pipe(
-                Effect.tap(() => loops.markAdmitted({ id: claim.loop.id, messageID: claim.messageID, now })),
+                Effect.tap(() =>
+                  loops.markAdmitted({
+                    id: claim.loop.id,
+                    messageID: claim.messageID,
+                    now,
+                    expectedFailureCount: claim.loop.failureCount,
+                  }),
+                ),
                 Effect.asVoid,
                 Effect.catchTag("Session.NotFoundError", () =>
                   loops
@@ -183,5 +191,5 @@ export function makeLayer(
 export const node = makeGlobalNode({
   service: Service,
   layer: makeLayer(),
-  deps: [SessionLoop.node, SessionV2.node],
+  deps: [SessionLoop.node, SessionLoopDispatch.node],
 })

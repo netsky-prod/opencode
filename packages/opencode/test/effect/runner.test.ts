@@ -9,7 +9,165 @@ const waitForState = <A, E>(runner: Runner.Runner<A, E>, tag: Runner.State<A, E>
   }).pipe(Effect.timeout("1 second"))
 
 describe("Runner", () => {
+  it.live(
+    "coalesces advisory wakes behind busy work without replacing the foreground result",
+    Effect.gen(function* () {
+      const scope = yield* Scope.Scope
+      const released = yield* Deferred.make<void>()
+      const started = yield* Deferred.make<void>()
+      const idle = yield* Deferred.make<void>()
+      const trace: string[] = []
+      const runner = Runner.make<string>(scope, {
+        onIdle: Effect.sync(() => {
+          trace.push("idle")
+        }).pipe(Effect.andThen(Deferred.succeed(idle, undefined))),
+      })
+      const foreground = yield* runner
+        .ensureRunning(
+          Effect.gen(function* () {
+            trace.push("foreground")
+            yield* Deferred.succeed(started, undefined)
+            yield* Deferred.await(released)
+            trace.push("foreground-end")
+            return "foreground"
+          }),
+        )
+        .pipe(Effect.forkChild)
+      yield* Deferred.await(started)
+      const queued = Effect.sync(() => {
+        trace.push("queued")
+        return "queued"
+      })
+      yield* runner.wake(queued)
+      yield* runner.wake(queued)
+      expect(trace).toEqual(["foreground"])
+      yield* Deferred.succeed(released, undefined)
+      expect(yield* Fiber.join(foreground)).toBe("foreground")
+      yield* Deferred.await(idle)
+      expect(trace).toEqual(["foreground", "foreground-end", "queued", "idle"])
+    }),
+  )
+
   // --- ensureRunning semantics ---
+
+  it.live(
+    "serializes a wake against asynchronous idle cleanup",
+    Effect.gen(function* () {
+      const scope = yield* Scope.Scope
+      const cleaning = yield* Deferred.make<void>()
+      const release = yield* Deferred.make<void>()
+      const wakeRelease = yield* Deferred.make<void>()
+      const wakeStarted = yield* Deferred.make<void>()
+      const runner = Runner.make<string>(scope, {
+        onIdle: Deferred.succeed(cleaning, undefined).pipe(Effect.andThen(Deferred.await(release))),
+      })
+      const foreground = yield* runner.ensureRunning(Effect.succeed("foreground")).pipe(Effect.forkChild)
+      yield* Deferred.await(cleaning)
+      const busyDuringCleanup = runner.busy
+      const waking = yield* runner
+        .wake(
+          Deferred.succeed(wakeStarted, undefined).pipe(Effect.andThen(Deferred.await(wakeRelease)), Effect.as("wake")),
+        )
+        .pipe(Effect.forkChild)
+      yield* Effect.yieldNow
+      expect(yield* Deferred.isDone(wakeStarted)).toBe(false)
+      yield* Deferred.succeed(release, undefined)
+      yield* Fiber.join(foreground)
+      yield* Fiber.join(waking)
+      yield* Deferred.await(wakeStarted)
+      expect(runner.busy).toBe(true)
+      yield* Deferred.succeed(wakeRelease, undefined)
+      expect(busyDuringCleanup).toBe(true)
+    }),
+  )
+
+  it.live(
+    "runs a pending wake after foreground failure",
+    Effect.gen(function* () {
+      const scope = yield* Scope.Scope
+      const started = yield* Deferred.make<void>()
+      const released = yield* Deferred.make<void>()
+      const finished = yield* Deferred.make<void>()
+      const runner = Runner.make<string, string>(scope)
+      const foreground = yield* runner
+        .ensureRunning(
+          Deferred.succeed(started, undefined).pipe(
+            Effect.andThen(Deferred.await(released)),
+            Effect.andThen(Effect.fail("foreground failed")),
+          ),
+        )
+        .pipe(Effect.forkChild)
+      yield* Deferred.await(started)
+      yield* runner.wake(Deferred.succeed(finished, undefined).pipe(Effect.as("wake")))
+      yield* Deferred.succeed(released, undefined)
+      expect(Exit.isFailure(yield* Fiber.await(foreground))).toBe(true)
+      yield* Deferred.await(finished)
+    }),
+  )
+
+  it.live(
+    "preserves shell, manual run, then coalesced wake order",
+    Effect.gen(function* () {
+      const scope = yield* Scope.Scope
+      const started = yield* Deferred.make<void>()
+      const released = yield* Deferred.make<void>()
+      const idle = yield* Deferred.make<void>()
+      const trace: string[] = []
+      const runner = Runner.make<string>(scope, { onIdle: Deferred.succeed(idle, undefined) })
+      const shell = yield* runner
+        .startShell(
+          Effect.gen(function* () {
+            trace.push("shell")
+            yield* Deferred.succeed(started, undefined)
+            yield* Deferred.await(released)
+            return "shell"
+          }),
+        )
+        .pipe(Effect.forkChild)
+      yield* Deferred.await(started)
+      const wake = Effect.sync(() => {
+        trace.push("wake")
+        return "wake"
+      })
+      yield* runner.wake(wake)
+      const manual = yield* runner
+        .ensureRunning(
+          Effect.sync(() => {
+            trace.push("manual")
+            return "manual"
+          }),
+        )
+        .pipe(Effect.forkChild)
+      yield* waitForState(runner, "ShellThenRun")
+      yield* runner.wake(wake)
+      yield* Deferred.succeed(released, undefined)
+      expect(yield* Fiber.join(shell)).toBe("shell")
+      expect(yield* Fiber.join(manual)).toBe("manual")
+      yield* Deferred.await(idle)
+      expect(trace).toEqual(["shell", "manual", "wake"])
+    }),
+  )
+
+  it.live(
+    "cancel discards the advisory successor",
+    Effect.gen(function* () {
+      const scope = yield* Scope.Scope
+      const runner = Runner.make<string>(scope)
+      let woke = false
+      const foreground = yield* runner.ensureRunning(Effect.never).pipe(Effect.forkChild)
+      yield* waitForState(runner, "Running")
+      yield* runner.wake(
+        Effect.sync(() => {
+          woke = true
+          return "wake"
+        }),
+      )
+      yield* runner.cancel
+      yield* Fiber.await(foreground)
+      expect(woke).toBe(false)
+      expect(runner.busy).toBe(false)
+    }),
+  )
 
   it.live(
     "ensureRunning starts work and returns result",

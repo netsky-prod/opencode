@@ -10,6 +10,9 @@ import { MCP } from "@/mcp"
 import { McpCatalog } from "@/mcp/catalog"
 import { EffectBridge } from "@/effect/bridge"
 import { InstanceState } from "@/effect/instance-state"
+import { WorkspaceRef } from "@/effect/instance-ref"
+import { InstanceStore } from "@/project/instance-store"
+import { Location } from "@opencode-ai/core/location"
 
 export type Tool = CoreCapabilityRuntime.Tool
 
@@ -139,7 +142,31 @@ export const node = makeLocationNode({
   deps: [MCP.node, EventV2.node],
 })
 
-export const adapterNode = node
+// Core background execution has a Location, not an HTTP/legacy InstanceRef.
+// Bind the host boundary once per location while retaining the legacy node for
+// callers that already route their own instance context.
+export const adapterNode = makeLocationNode({
+  service: CoreCapabilityRuntime.Service,
+  layer: Layer.effect(
+    CoreCapabilityRuntime.Service,
+    Effect.gen(function* () {
+      const runtime = yield* CoreCapabilityRuntime.Service
+      const location = yield* Location.Service
+      const instances = yield* InstanceStore.Service
+      const bind = <A, E>(effect: Effect.Effect<A, E>) =>
+        instances
+          .provide({ directory: location.directory }, effect)
+          .pipe(Effect.provideService(WorkspaceRef, location.workspaceID))
+      return CoreCapabilityRuntime.Service.of({
+        acquire: (key, definition) => bind(runtime.acquire(key, definition)),
+        release: (reference) => bind(runtime.release(reference)),
+        activate: (definitions) => bind(runtime.activate(definitions)),
+        status: (key) => bind(runtime.status(key)),
+      })
+    }),
+  ).pipe(Layer.provide(layer)),
+  deps: [MCP.node, EventV2.node, InstanceStore.node, Location.node],
+})
 
 function mcpConfig(definition: CapabilityManifest.Runtime): {
   readonly info: ConfigMCPV1.Info

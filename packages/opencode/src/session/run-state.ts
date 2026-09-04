@@ -16,6 +16,11 @@ export interface Interface {
     onInterrupt: Effect.Effect<SessionV1.WithParts>,
     work: Effect.Effect<SessionV1.WithParts>,
   ) => Effect.Effect<SessionV1.WithParts>
+  readonly wake: (
+    sessionID: SessionID,
+    onInterrupt: Effect.Effect<SessionV1.WithParts>,
+    work: Effect.Effect<SessionV1.WithParts>,
+  ) => Effect.Effect<void>
   readonly startShell: (
     sessionID: SessionID,
     onInterrupt: Effect.Effect<SessionV1.WithParts>,
@@ -58,7 +63,9 @@ const layer = Layer.effect(
       if (existing) return existing
       const next = Runner.make<SessionV1.WithParts>(data.scope, {
         onIdle: Effect.gen(function* () {
-          data.runners.delete(sessionID)
+          // Keep one ownership state machine for the instance lifetime. A caller
+          // can already hold this runner while idle cleanup is in progress;
+          // deleting it here would allow a second owner for the same session.
           yield* status.set(sessionID, { type: "idle" })
         }),
         onBusy: status.set(sessionID, { type: "busy" }),
@@ -104,7 +111,12 @@ const layer = Layer.effect(
         .pipe(Effect.catchTag("RunnerBusy", () => Effect.fail(busyError(sessionID))))
     })
 
-    return Service.of({ assertNotBusy, cancel, ensureRunning, startShell })
+    const wake: Interface["wake"] = Effect.fn("SessionRunState.wake")(function* (sessionID, onInterrupt, work) {
+      const current = yield* runner(sessionID, onInterrupt)
+      yield* current.wake(work)
+    })
+
+    return Service.of({ assertNotBusy, cancel, ensureRunning, startShell, wake })
   }),
 )
 

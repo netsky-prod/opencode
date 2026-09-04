@@ -14,9 +14,36 @@ import { CapabilityRuntime } from "../../src/capability/runtime"
 import { locationServices } from "../../src/location-services"
 import { MCP } from "../../src/mcp"
 import { testEffect } from "../lib/effect"
+import { AppNodeBuilderV1 } from "../../src/effect/app-node-builder-v1"
+import { InstanceRef } from "../../src/effect/instance-ref"
+import { InstanceState } from "../../src/effect/instance-state"
+import { Location } from "@opencode-ai/core/location"
+import { AbsolutePath } from "@opencode-ai/core/schema"
 
 const stdioFixture = path.join(import.meta.dir, "../fixture/mcp-lifecycle-stdio.ts")
 const it = testEffect(LayerNode.compile(LayerNode.group([EventV2.node, MCP.node, CapabilityRuntime.node])))
+
+it.instance("binds host MCP context for a Core background location without a legacy request", () =>
+  Effect.gen(function* () {
+    const directory = yield* InstanceState.directory
+    const server = yield* serveMcp([{ name: "ping", inputSchema: { type: "object", properties: {} } }])
+    yield* Effect.gen(function* () {
+      const runtime = yield* CoreCapabilityRuntime.Service
+      const handle = yield* runtime.acquire("browser/playwright", definition(server.url))
+      expect(yield* CapabilityRuntime.tools(handle)[0].call({})).toMatchObject({
+        content: [{ type: "text", text: "called:ping" }],
+      })
+      yield* runtime.release(handle)
+    }).pipe(
+      Effect.provide(
+        AppNodeBuilderV1.build(CapabilityRuntime.adapterNode, [
+          [Location.node, Location.boundNode({ directory: AbsolutePath.make(directory) })],
+        ]),
+      ),
+      Effect.provideService(InstanceRef, undefined),
+    )
+  }),
+)
 
 test("the OpenCode adapter satisfies Core capability-tool composition", () => {
   const composed = LayerNode.hoist(CapabilityTool.node, Node.tags.values.global, [

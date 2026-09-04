@@ -46,6 +46,7 @@ import { Cause, Effect, Exit, Latch, Layer, Option, Scope, Context, Schema, Type
 import { InstanceState } from "@/effect/instance-state"
 import { TaskTool, type TaskPromptOps } from "@/tool/task"
 import { SessionRunState } from "./run-state"
+import { SessionLoopInbox } from "./loop-inbox"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Database } from "@opencode-ai/core/database/database"
@@ -104,6 +105,7 @@ export interface Interface {
   readonly cancel: (sessionID: SessionID) => Effect.Effect<void>
   readonly prompt: (input: PromptInput) => Effect.Effect<SessionV1.WithParts, Image.Error>
   readonly loop: (input: LoopInput) => Effect.Effect<SessionV1.WithParts>
+  readonly wakeQueued: (sessionID: SessionID) => Effect.Effect<void>
   readonly shell: (input: ShellInput) => Effect.Effect<SessionV1.WithParts, Session.BusyError>
   readonly command: (input: CommandInput) => Effect.Effect<SessionV1.WithParts, Image.Error>
   readonly resolvePromptParts: (template: string) => Effect.Effect<PromptInput["parts"]>
@@ -134,6 +136,7 @@ const layer = Layer.effect(
     const scope = yield* Scope.Scope
     const instruction = yield* Instruction.Service
     const state = yield* SessionRunState.Service
+    const inbox = yield* SessionLoopInbox.Service
     const revert = yield* SessionRevert.Service
     const summary = yield* SessionSummary.Service
     const sys = yield* SystemPrompt.Service
@@ -1350,6 +1353,19 @@ const layer = Layer.effect(
       return yield* state.ensureRunning(input.sessionID, lastAssistant(input.sessionID), runLoop(input.sessionID))
     })
 
+    const wakeQueued = Effect.fn("SessionPrompt.wakeQueued")(function* (sessionID: SessionID) {
+      yield* state.wake(
+        sessionID,
+        lastAssistant(sessionID),
+        Effect.gen(function* () {
+          // This work already owns the legacy runner. Re-entering public prompt/loop
+          // here would join itself; materialize one input, then run the same history.
+          while (yield* inbox.next(sessionID)) yield* runLoop(sessionID)
+          return yield* lastAssistant(sessionID)
+        }),
+      )
+    })
+
     const shell: (input: ShellInput) => Effect.Effect<SessionV1.WithParts, Session.BusyError> = Effect.fn(
       "SessionPrompt.shell",
     )(function* (input: ShellInput) {
@@ -1488,6 +1504,7 @@ const layer = Layer.effect(
       cancel,
       prompt,
       loop,
+      wakeQueued,
       shell,
       command,
       resolvePromptParts,
@@ -1622,6 +1639,7 @@ export const node = LayerNode.make({
     CrossSpawnSpawner.node,
     Instruction.node,
     SessionRunState.node,
+    SessionLoopInbox.node,
     SessionRevert.node,
     SessionSummary.node,
     SystemPrompt.node,

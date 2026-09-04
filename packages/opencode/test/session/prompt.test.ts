@@ -6,7 +6,7 @@ import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { eq } from "drizzle-orm"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { expect } from "bun:test"
-import { Cause, Deferred, Duration, Effect, Exit, Fiber, Layer, Scope } from "effect"
+import { Cause, Clock, Deferred, Duration, Effect, Exit, Fiber, Layer, Scope } from "effect"
 import path from "path"
 import { fileURLToPath } from "url"
 import fs from "node:fs/promises"
@@ -36,6 +36,9 @@ import { SessionSummary } from "../../src/session/summary"
 import { Instruction } from "../../src/session/instruction"
 import { SessionProcessor } from "../../src/session/processor"
 import { SessionPrompt } from "../../src/session/prompt"
+import { SessionLoopInbox } from "../../src/session/loop-inbox"
+import { SessionInput } from "@opencode-ai/core/session/input"
+import { SessionLoop } from "@opencode-ai/core/session/loop"
 import { SessionTools } from "../../src/session/tools"
 import { SessionRevert } from "../../src/session/revert"
 import { SessionRunState } from "../../src/session/run-state"
@@ -181,6 +184,8 @@ const testLLMServerNode = LayerNode.make({ service: TestLLMServer, layer: TestLL
 
 const promptRoot = LayerNode.group([
   SessionPrompt.node,
+  SessionLoopInbox.node,
+  SessionLoop.node,
   Session.node,
   SessionProjector.node,
   MessageV2.node,
@@ -619,6 +624,54 @@ it.instance("loop calls LLM and returns assistant message", () =>
   }),
 )
 
+noLLMServer.instance("materializes a leased admission retry before markAdmitted clears the earlier failure", () =>
+  Effect.gen(function* () {
+    const sessions = yield* Session.Service
+    const loops = yield* SessionLoop.Service
+    const inbox = yield* SessionLoopInbox.Service
+    const events = yield* EventV2Bridge.Service
+    const { db } = yield* Database.Service
+    const chat = yield* sessions.create({ title: "Admission retry" })
+    yield* user(chat.id, "history")
+    const now = yield* Clock.currentTimeMillis
+    const loop = yield* loops.create({ sessionID: chat.id, prompt: "retry", mode: "adaptive", now })
+    const [claim] = yield* loops.claimDue({ owner: "first", now, leaseMs: 30000, limit: 1 })
+    yield* loops.recordFailure({
+      id: loop.id,
+      messageID: claim.messageID,
+      now,
+      retryAt: now,
+      error: "previous admission failed",
+    })
+    yield* loops.claimDue({ owner: "retry", now, leaseMs: 30000, limit: 1 })
+    const input = yield* SessionInput.admit(db, events, {
+      id: claim.messageID,
+      sessionID: chat.id,
+      prompt: { text: "retry" },
+      delivery: "queue",
+    })
+    expect(yield* inbox.next(chat.id)).toBe(true)
+    expect((yield* SessionInput.find(db, input.id))?.promotedSeq).toBeDefined()
+    expect(yield* db.select().from(SessionMessageTable).all().pipe(Effect.orDie)).toEqual([])
+    const failed = yield* loops.create({ sessionID: chat.id, prompt: "new failure", mode: "adaptive", now })
+    const [next] = yield* loops.claimDue({ owner: "next", now, leaseMs: 30000, limit: 1 })
+    yield* SessionInput.admit(db, events, {
+      id: next.messageID,
+      sessionID: chat.id,
+      prompt: { text: "new failure" },
+      delivery: "queue",
+    })
+    yield* loops.recordFailure({
+      id: failed.id,
+      messageID: next.messageID,
+      now,
+      retryAt: now + 60000,
+      error: "new materialization failure",
+    })
+    expect(yield* inbox.next(chat.id)).toBe(false)
+  }),
+)
+
 withMcpInstructions.instance(
   "loop includes MCP instructions in model system context",
   () =>
@@ -633,6 +686,9 @@ withMcpInstructions.instance(
       yield* llm.hang
       yield* user(chat.id, "hello")
 
+      // Interrupting a waiter does not own/cancel the shared runner. Close its
+      // hanging SSE explicitly before the fixture HTTP server's graceful shutdown.
+      yield* Effect.addFinalizer(() => prompt.cancel(chat.id))
       const fiber = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
       yield* awaitWithTimeout(llm.wait(1), "timed out waiting for MCP instruction request", "10 seconds")
 
@@ -1230,7 +1286,12 @@ noLLMServer.instance(
         always: ["browser"],
       })
       yield* permissions.reply({ requestID: enableRequest.id, reply: "always" })
-      const enabled = yield* awaitWithTimeout(Fiber.join(enableFiber), "approved capability enable did not settle")
+      // Approval is followed by executable probes and a real stdio MCP startup, not just an in-memory reply.
+      const enabled = yield* awaitWithTimeout(
+        Fiber.join(enableFiber),
+        "approved capability enable did not settle",
+        "20 seconds",
+      )
       expect(enabled).toMatchObject({
         metadata: { structured: { id: "browser", profiles: ["default"], state: "active", nextTurn: true } },
       })
@@ -1442,7 +1503,7 @@ noLLMServer.instance(
       )
     }),
   { config: cfg },
-  10_000,
+  30_000,
 )
 
 noLLMServer.instance(
@@ -1501,7 +1562,8 @@ noLLMServer.instance(
         always: all.request.always,
       }).toEqual({ permission: "capability_status", patterns: ["*"], always: [] })
       yield* permissions.reply({ requestID: all.request.id, reply: "always" })
-      yield* awaitWithTimeout(Fiber.join(all.fiber), "wildcard capability status did not settle")
+      // Wildcard status probes installed host tools; allow their bounded probe window after approval.
+      yield* awaitWithTimeout(Fiber.join(all.fiber), "wildcard capability status did not settle", "20 seconds")
 
       const one = yield* executeAndRequest("capability_status", { id: "browser" })
       expect({
@@ -1510,7 +1572,7 @@ noLLMServer.instance(
         always: one.request.always,
       }).toEqual({ permission: "capability_status", patterns: ["browser"], always: ["browser"] })
       yield* permissions.reply({ requestID: one.request.id, reply: "once" })
-      yield* awaitWithTimeout(Fiber.join(one.fiber), "specific capability status did not settle")
+      yield* awaitWithTimeout(Fiber.join(one.fiber), "specific capability status did not settle", "20 seconds")
 
       const search = yield* executeAndRequest("capability_search", { query: "browser testing" })
       expect({
@@ -1527,7 +1589,7 @@ noLLMServer.instance(
       yield* Scope.close(scope, Exit.void)
     }),
   { config: cfg },
-  10_000,
+  30_000,
 )
 
 noLLMServer.instance(

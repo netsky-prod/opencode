@@ -8,7 +8,7 @@ Ask the agent to discover a capability, inspect its status, enable the smallest 
 
 | Pack      | Profiles                 | Runtime and prerequisites                                                                                     |
 | --------- | ------------------------ | ------------------------------------------------------------------------------------------------------------- |
-| browser   | default, diagnostics     | Pinned Playwright MCP or Chrome DevTools MCP; Node, npm/npx, and an installed browser                          |
+| browser   | default, diagnostics     | Pinned Playwright MCP or Chrome DevTools MCP; Node, npm/npx, and an installed browser                         |
 | research  | default                  | Federated Research MCP and Context7; configured endpoint and authorization                                    |
 | mobile    | ios, android             | Guidance and probes for Xcode/simulator, Flutter, adb; iOS is macOS-only                                      |
 | security  | static, dynamic          | Guidance and probes for Semgrep, CodeQL, Gitleaks, OSV, Trivy; ZAP, Nuclei, Schemathesis, Nmap, mitmproxy, k6 |
@@ -105,6 +105,10 @@ To roll back, re-enable the original MCP entries and disable the pack. Do not de
 ## Checkpoints and evidence
 
 Adaptive loops use `loop_checkpoint` for the shared objective, acceptance criteria, verified facts/evidence, uncertainty, decisions, blockers, artifacts, and next action. They continue through `loop_wakeup`; there is no separate goal entity. A checkpoint helps resume work after compaction/restart but cannot itself prove that a build, browser check, or deployment succeeded. Preserve inspectable artifacts and mark completion only after checking them.
+
+Loop delivery uses the durable Core input queue. For an existing CLI conversation, the host projects the scheduled message into that same conversation and serializes its wake behind any running turn. Native Core sessions keep their Core execution driver. An acknowledgement records durable host projection without creating a second Core transcript. Unacknowledged loop inputs are recovered in bounded, leased batches; failed deliveries back off, and ordinary queued user prompts are not consumed by this adapter.
+
+Acknowledgement is not proof that the model ran or the task finished. A crash after acknowledgement does **not** automatically replay provider work or tool side effects; the saved conversation and checkpoint remain available for explicit resume. This is the same recovery boundary as Core prompt promotion. Conversations already split between legacy and Core histories by an older build are not automatically merged or replayed: inspect both histories and resume explicitly, or start a clean session.
 
 ## Installation and verification
 

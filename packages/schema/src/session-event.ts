@@ -98,6 +98,15 @@ export const PromptAdmitted = Event.define({
 })
 export type PromptAdmitted = typeof PromptAdmitted.Type
 
+// A host may project the admitted prompt into another transcript representation.
+// Acknowledgement advances the durable inbox without creating a Core message.
+export const PromptAcknowledged = Event.define({
+  type: "session.next.prompt.acknowledged",
+  ...options,
+  schema: PromptFields,
+})
+export type PromptAcknowledged = typeof PromptAcknowledged.Type
+
 export const ContextUpdated = Event.define({
   type: "session.next.context.updated",
   ...options,
@@ -452,6 +461,7 @@ export const DurableDefinitions = Event.inventory(
   Moved,
   Prompted,
   PromptAdmitted,
+  PromptAcknowledged,
   ContextUpdated,
   Synthetic,
   Shell.Started,
@@ -483,6 +493,7 @@ export const Definitions = Event.inventory(
   Moved,
   Prompted,
   PromptAdmitted,
+  PromptAcknowledged,
   ContextUpdated,
   Synthetic,
   Shell.Started,

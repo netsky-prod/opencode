@@ -1,5 +1,6 @@
 import { describe, expect } from "bun:test"
-import { DateTime, Effect, Fiber, Layer, Stream } from "effect"
+import { Clock, DateTime, Effect, Fiber, Layer, Stream } from "effect"
+import { TestClock } from "effect/testing"
 import { eq } from "drizzle-orm"
 import { Database } from "@opencode-ai/core/database/database"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
@@ -16,6 +17,8 @@ import { SessionMessage } from "@opencode-ai/core/session/message"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { SessionExecution } from "@opencode-ai/core/session/execution"
 import { SessionInput } from "@opencode-ai/core/session/input"
+import { SessionLoop } from "@opencode-ai/core/session/loop"
+import { SessionLoopDispatch } from "@opencode-ai/core/session/loop-dispatch"
 import { SessionInputTable, SessionMessageTable, SessionTable } from "@opencode-ai/core/session/sql"
 import { SessionStore } from "@opencode-ai/core/session/store"
 import { testEffect } from "./lib/effect"
@@ -44,7 +47,15 @@ const execution = Layer.succeed(
 )
 const it = testEffect(
   AppNodeBuilder.build(
-    LayerNode.group([Database.node, EventV2.node, SessionProjector.node, SessionStore.node, SessionV2.node]),
+    LayerNode.group([
+      Database.node,
+      EventV2.node,
+      SessionProjector.node,
+      SessionStore.node,
+      SessionV2.node,
+      SessionLoop.node,
+      SessionLoopDispatch.node,
+    ]),
     [[SessionExecution.node, execution]],
   ),
 )
@@ -99,6 +110,183 @@ const eventCount = (type: string) =>
   )
 
 describe("SessionV2.prompt", () => {
+  it.effect("recovers a committed retry after an earlier admission failure without waiting for the next cadence", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const sessions = yield* SessionV2.Service
+      const loops = yield* SessionLoop.Service
+      const dispatch = yield* SessionLoopDispatch.Service
+      const now = yield* Clock.currentTimeMillis
+      const loop = yield* loops.create({ sessionID, prompt: "retry crash", mode: "adaptive", now })
+      const [first] = yield* loops.claimDue({ owner: "first", now, leaseMs: 30000, limit: 1 })
+      yield* loops.recordFailure({
+        id: loop.id,
+        messageID: first.messageID,
+        now,
+        retryAt: now + 1000,
+        error: "admission failed",
+      })
+      yield* TestClock.adjust("1 second")
+      const [retry] = yield* loops.claimDue({ owner: "retry", now: now + 1000, leaseMs: 30000, limit: 1 })
+      expect(retry.messageID).toBe(first.messageID)
+      yield* sessions.prompt({
+        id: retry.messageID,
+        sessionID,
+        prompt: { text: "retry crash" },
+        delivery: "queue",
+        resume: false,
+      })
+      // Process death before markAdmitted leaves the earlier failure count and the new cadence.
+      expect((yield* loops.get({ sessionID, id: loop.id })).nextRunAt).toBe(now + 601000)
+      wakeCalls.length = 0
+      yield* dispatch.recover
+      expect(wakeCalls).toEqual([])
+      yield* TestClock.adjust("30 seconds")
+      yield* dispatch.recover
+      expect(wakeCalls).toEqual([sessionID])
+      expect((yield* loops.get({ sessionID, id: loop.id })).failureCount).toBe(0)
+    }),
+  )
+
+  it.effect("does not replay provider work after durable host acknowledgement", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const sessions = yield* SessionV2.Service
+      const loops = yield* SessionLoop.Service
+      const dispatch = yield* SessionLoopDispatch.Service
+      const { db } = yield* Database.Service
+      const events = yield* EventV2.Service
+      const now = yield* Clock.currentTimeMillis
+      const loop = yield* loops.create({ sessionID, prompt: "ack boundary", mode: "adaptive", now })
+      const [claim] = yield* loops.claimDue({ owner: "before-crash", now, leaseMs: 30000, limit: 1 })
+      const queued = yield* sessions.prompt({
+        id: claim.messageID,
+        sessionID,
+        prompt: { text: "ack boundary" },
+        delivery: "queue",
+        resume: false,
+      })
+      yield* SessionInput.acknowledge(db, events, queued)
+      wakeCalls.length = 0
+      executionCalls.length = 0
+      yield* TestClock.adjust("30 seconds")
+      yield* dispatch.recover
+      expect(wakeCalls).toEqual([])
+      expect(executionCalls).toEqual([])
+      expect(yield* loops.reconcilePending(now + 30000)).toBe(1)
+      expect((yield* loops.get({ sessionID, id: loop.id })).pendingMessageID).toBeUndefined()
+      yield* sessions.resume(sessionID)
+      expect(executionCalls).toEqual([sessionID])
+    }),
+  )
+
+  it.effect("bounds loop recovery to 32 leased admissions and ignores ordinary queued prompts", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const sessions = yield* SessionV2.Service
+      const loops = yield* SessionLoop.Service
+      const dispatch = yield* SessionLoopDispatch.Service
+      const now = yield* Clock.currentTimeMillis
+      yield* sessions.prompt({ sessionID, prompt: { text: "ordinary queue" }, delivery: "queue", resume: false })
+      for (let index = 0; index < 35; index++)
+        yield* loops.create({ sessionID, prompt: `queued ${index}`, mode: "adaptive", now })
+      const claims = yield* loops.claimDue({ owner: "before-crash", now, leaseMs: 30000, limit: 35 })
+      for (const claim of claims) {
+        yield* sessions.prompt({
+          id: claim.messageID,
+          sessionID,
+          prompt: { text: claim.loop.prompt },
+          delivery: "queue",
+          resume: false,
+        })
+        yield* loops.markAdmitted({ id: claim.loop.id, messageID: claim.messageID, now })
+      }
+      wakeCalls.length = 0
+      yield* dispatch.recover
+      expect(wakeCalls).toHaveLength(32)
+      yield* dispatch.recover
+      expect(wakeCalls).toHaveLength(35)
+      yield* dispatch.recover
+      expect(wakeCalls).toHaveLength(35)
+      yield* TestClock.adjust("30 seconds")
+      yield* dispatch.recover
+      expect(wakeCalls).toHaveLength(67)
+      expect(yield* sessions.messages({ sessionID })).toEqual([])
+    }),
+  )
+
+  it.effect("backs off failed recovery and preserves a newer asynchronous delivery failure", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const sessions = yield* SessionV2.Service
+      const loops = yield* SessionLoop.Service
+      const { db } = yield* Database.Service
+      const now = yield* Clock.currentTimeMillis
+      const loop = yield* loops.create({ sessionID, prompt: "recover", mode: "adaptive", now })
+      const [claim] = yield* loops.claimDue({ owner: "before-crash", now, leaseMs: 30000, limit: 1 })
+      yield* sessions.prompt({
+        id: claim.messageID,
+        sessionID,
+        prompt: { text: "recover" },
+        delivery: "queue",
+        resume: false,
+      })
+      yield* loops.markAdmitted({ id: loop.id, messageID: claim.messageID, now })
+      let calls = 0
+      const failed = SessionLoopDispatch.recover(db, loops, () => {
+        calls++
+        return Effect.fail(new SessionV2.PromptConflictError({ sessionID, messageID: claim.messageID }))
+      })
+      yield* failed
+      yield* failed
+      expect(calls).toBe(1)
+      expect((yield* loops.get({ sessionID, id: loop.id })).failureCount).toBe(1)
+      yield* TestClock.adjust("1 second")
+      yield* SessionLoopDispatch.recover(db, loops, sessions.prompt)
+      expect((yield* loops.get({ sessionID, id: loop.id })).failureCount).toBe(0)
+      yield* loops.recordFailure({
+        id: loop.id,
+        messageID: claim.messageID,
+        now: now + 1000,
+        retryAt: now + 2000,
+        error: "host delivery failed",
+      })
+      yield* loops.markAdmitted({ id: loop.id, messageID: claim.messageID, now: now + 1000, expectedFailureCount: 0 })
+      expect((yield* loops.get({ sessionID, id: loop.id })).lastError).toBe("host delivery failed")
+    }),
+  )
+
+  it.effect("acknowledges host projection durably without creating a Core conversation", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* SessionV2.Service
+      const events = yield* EventV2.Service
+      const { db } = yield* Database.Service
+      const queued = yield* session.prompt({
+        sessionID,
+        prompt: { text: "Host wake" },
+        delivery: "queue",
+        resume: false,
+      })
+      expect(queued.promotedSeq).toBeUndefined()
+      yield* Effect.all([SessionInput.acknowledge(db, events, queued), SessionInput.acknowledge(db, events, queued)], {
+        concurrency: "unbounded",
+      })
+      expect((yield* admitted(queued.id))?.promotedSeq).toBeGreaterThan(queued.admittedSeq)
+      expect(yield* session.messages({ sessionID })).toEqual([])
+      expect(yield* eventCount(EventV2.versionedType(SessionEvent.PromptAcknowledged.type, 1))).toBe(1)
+      expect(
+        (yield* session.prompt({
+          id: queued.id,
+          sessionID,
+          prompt: { text: "Host wake" },
+          delivery: "queue",
+          resume: false,
+        })).promotedSeq,
+      ).toBeDefined()
+    }),
+  )
+
   it.effect("exposes the execution registry", () =>
     Effect.gen(function* () {
       activeSessions.add(sessionID)

@@ -44,6 +44,18 @@ const setup = Effect.gen(function* () {
 })
 
 describe("SessionLoop", () => {
+  it.effect("recovers a claimed but unadmitted wake after lease expiry without waiting for the next cadence", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const loops = yield* SessionLoop.Service
+      yield* loops.create({ sessionID, prompt: "Recover admission", mode: "adaptive", now: 1000 })
+      const [first] = yield* loops.claimDue({ owner: "crashed", now: 1000, leaseMs: 30000, limit: 1 })
+      expect(first).toBeDefined()
+      expect(yield* loops.claimDue({ owner: "replacement", now: 30999, leaseMs: 30000, limit: 1 })).toEqual([])
+      const [retry] = yield* loops.claimDue({ owner: "replacement", now: 31000, leaseMs: 30000, limit: 1 })
+      expect(retry?.messageID).toBe(first.messageID)
+    }),
+  )
   it.effect("emits checkpoint counts and completion requests without checkpoint or session content", () =>
     Effect.gen(function* () {
       yield* setup
@@ -293,6 +305,41 @@ describe("SessionLoop", () => {
         .pipe(Effect.orDie)
       yield* loops.reconcilePending(121_001)
       expect((yield* loops.get({ sessionID, id: created.id })).pendingMessageID).toBeUndefined()
+    }),
+  )
+
+  it.effect("coalesces a fixed cadence without cancelling a pending recovery lease", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const { db } = yield* Database.Service
+      const loops = yield* SessionLoop.Service
+      const loop = yield* loops.create({ sessionID, prompt: "tick", mode: "fixed", intervalMs: 10000, now: 1000 })
+      const [claim] = yield* loops.claimDue({ owner: "recovering", now: 11000, leaseMs: 30000, limit: 1 })
+      yield* db
+        .insert(SessionInputTable)
+        .values({
+          id: claim.messageID,
+          session_id: sessionID,
+          prompt: { text: "tick" },
+          delivery: "queue",
+          admitted_seq: 1,
+          time_created: 11000,
+        })
+        .run()
+        .pipe(Effect.orDie)
+      yield* loops.markAdmitted({ id: loop.id, messageID: claim.messageID, now: 11000, holdLease: true })
+      expect(yield* loops.claimDue({ owner: "scheduler", now: 21000, leaseMs: 30000, limit: 1 })).toEqual([])
+      expect(yield* loops.get({ sessionID, id: loop.id })).toMatchObject({
+        nextRunAt: 31000,
+        pendingMessageID: claim.messageID,
+      })
+      const stored = yield* db
+        .select()
+        .from(SessionLoopTable)
+        .where(eq(SessionLoopTable.id, loop.id))
+        .get()
+        .pipe(Effect.orDie)
+      expect(stored?.lease_expires_at).toBe(41000)
     }),
   )
 

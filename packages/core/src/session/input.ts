@@ -38,6 +38,24 @@ export class LifecycleConflict extends Schema.TaggedErrorClass<LifecycleConflict
   id: SessionMessage.ID,
 }) {}
 
+/** Call only after the host has durably and idempotently materialized this exact input. */
+export const acknowledge = Effect.fn("SessionInput.acknowledge")(function* (
+  db: DatabaseService,
+  events: EventV2.Interface,
+  input: Admitted,
+) {
+  const stored = yield* find(db, input.id)
+  if (!stored || !matchesProjection(stored, input)) return yield* Effect.die(new LifecycleConflict({ id: input.id }))
+  if (stored.promotedSeq !== undefined) return
+  yield* events.publish(SessionEvent.PromptAcknowledged, {
+    sessionID: input.sessionID,
+    messageID: input.id,
+    prompt: input.prompt,
+    delivery: input.delivery,
+    timestamp: input.timeCreated,
+  })
+})
+
 export const admit = Effect.fn("SessionInput.admit")(function* (
   db: DatabaseService,
   events: EventV2.Interface,

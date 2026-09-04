@@ -145,6 +145,8 @@ export interface Interface {
     readonly id: ID
     readonly messageID: SessionMessage.ID
     readonly now: number
+    readonly holdLease?: boolean
+    readonly expectedFailureCount?: number
   }) => Effect.Effect<void>
   readonly recordFailure: (input: {
     readonly id: ID
@@ -603,6 +605,17 @@ const layer = Layer.effect(
       readonly limit: number
     }) {
       if (input.limit <= 0 || input.leaseMs <= 0) return []
+      const due = or(
+        lte(SessionLoopTable.next_run_at, input.now),
+        // A process may die after reserving the deterministic message ID but
+        // before durable admission. Recover its expired claim, not the cadence.
+        and(
+          sql`${SessionLoopTable.lease_owner} IS NOT NULL`,
+          lte(SessionLoopTable.lease_expires_at, input.now),
+          sql`${SessionLoopTable.pending_message_id} IS NOT NULL`,
+          sql`NOT EXISTS (SELECT 1 FROM ${SessionInputTable} WHERE ${SessionInputTable.id} = ${SessionLoopTable.pending_message_id})`,
+        ),
+      )
       return yield* db
         .transaction((tx) =>
           Effect.gen(function* () {
@@ -612,8 +625,14 @@ const layer = Layer.effect(
               .where(
                 and(
                   eq(SessionLoopTable.state, "active"),
-                  lte(SessionLoopTable.next_run_at, input.now),
-                  or(isNull(SessionLoopTable.lease_expires_at), lte(SessionLoopTable.lease_expires_at, input.now)),
+                  due,
+                  or(
+                    isNull(SessionLoopTable.lease_expires_at),
+                    lte(SessionLoopTable.lease_expires_at, input.now),
+                    // Coalescing an admitted queue entry does not take execution
+                    // ownership and must not be delayed by a recovery lease.
+                    sql`EXISTS (SELECT 1 FROM ${SessionInputTable} WHERE ${SessionInputTable.id} = ${SessionLoopTable.pending_message_id} AND ${SessionInputTable.promoted_seq} IS NULL)`,
+                  ),
                 ),
               )
               .orderBy(asc(SessionLoopTable.next_run_at), asc(SessionLoopTable.id))
@@ -643,8 +662,6 @@ const layer = Layer.effect(
                   .set({
                     last_due_at: candidate.next_run_at,
                     next_run_at: nextRunAt,
-                    lease_owner: null,
-                    lease_expires_at: null,
                     time_updated: input.now,
                   })
                   .where(
@@ -688,7 +705,7 @@ const layer = Layer.effect(
                   and(
                     eq(SessionLoopTable.id, candidate.id),
                     eq(SessionLoopTable.state, "active"),
-                    lte(SessionLoopTable.next_run_at, input.now),
+                    due,
                     or(isNull(SessionLoopTable.lease_expires_at), lte(SessionLoopTable.lease_expires_at, input.now)),
                   ),
                 )
@@ -706,6 +723,8 @@ const layer = Layer.effect(
       readonly id: ID
       readonly messageID: SessionMessage.ID
       readonly now: number
+      readonly holdLease?: boolean
+      readonly expectedFailureCount?: number
     }) {
       yield* db
         .update(SessionLoopTable)
@@ -713,11 +732,18 @@ const layer = Layer.effect(
           last_admitted_at: input.now,
           last_error: null,
           failure_count: 0,
-          lease_owner: null,
-          lease_expires_at: null,
+          ...(input.holdLease ? {} : { lease_owner: null, lease_expires_at: null }),
           time_updated: input.now,
         })
-        .where(and(eq(SessionLoopTable.id, input.id), eq(SessionLoopTable.pending_message_id, input.messageID)))
+        .where(
+          and(
+            eq(SessionLoopTable.id, input.id),
+            eq(SessionLoopTable.pending_message_id, input.messageID),
+            input.expectedFailureCount === undefined
+              ? undefined
+              : eq(SessionLoopTable.failure_count, input.expectedFailureCount),
+          ),
+        )
         .run()
         .pipe(Effect.orDie)
     })
