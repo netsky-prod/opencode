@@ -1,0 +1,37 @@
+{
+  "id": "research",
+  "version": 1,
+  "description": "Find, fetch, deduplicate, and synthesize web, scientific, and library evidence with citations.",
+  "platforms": ["darwin", "linux"],
+  "skills": [
+    {
+      "name": "research",
+      "description": "Research implementation-changing questions with primary sources, citation metadata, and saved evidence.",
+      "path": "research.md"
+    }
+  ],
+  "runtimes": [
+    {
+      "id": "federated-research",
+      "type": "mcp",
+      "command": ["${FEDERATED_RESEARCH_MCP_URL}"],
+      "environment": {
+        "AUTHORIZATION": "${FEDERATED_RESEARCH_AUTHORIZATION}"
+      },
+      "timeoutMs": 30000
+    },
+    {
+      "id": "context7",
+      "type": "mcp",
+      "command": ["https://mcp.context7.com/mcp"],
+      "timeoutMs": 30000
+    }
+  ],
+  "profiles": {
+    "default": {
+      "description": "Search broad web and scientific indexes, inspect primary sources, and verify current library documentation.",
+      "skills": ["research"],
+      "runtimes": ["federated-research", "context7"]
+    }
+  }
+}

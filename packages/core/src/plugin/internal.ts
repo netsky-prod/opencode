@@ -6,6 +6,7 @@ import type { PluginContext } from "@opencode-ai/plugin/v2/effect"
 import { Effect, Layer, Scope } from "effect"
 import { AgentV2 } from "../agent"
 import { Catalog } from "../catalog"
+import { CapabilityCatalog } from "../capability/catalog"
 import { CommandV2 } from "../command"
 import { Config } from "../config"
 import { ConfigAgentPlugin } from "../config/plugin/agent"
@@ -29,6 +30,7 @@ import { State } from "../state"
 import { FetchHttpClient, HttpClient } from "effect/unstable/http"
 import { AgentPlugin } from "./agent"
 import { CommandPlugin } from "./command"
+import { CapabilityPlugin } from "./capability"
 import { ModelsDevPlugin } from "./models-dev"
 import { ProviderPlugins } from "./provider"
 import { SkillPlugin } from "./skill"
@@ -37,6 +39,7 @@ import { VariantPlugin } from "./variant"
 export type Requirements =
   | AgentV2.Service
   | Catalog.Service
+  | CapabilityCatalog.Service
   | CommandV2.Service
   | Config.Service
   | EventV2.Service
@@ -63,6 +66,7 @@ export function define<R>(plugin: Plugin<R>) {
 const layer = Layer.effectDiscard(
   Effect.gen(function* () {
     const catalog = yield* Catalog.Service
+    const capabilities = yield* CapabilityCatalog.Service
     const commands = yield* CommandV2.Service
     const plugin = yield* PluginV2.Service
     const integration = yield* Integration.Service
@@ -86,6 +90,7 @@ const layer = Layer.effectDiscard(
             .effect(context)
             .pipe(
               Effect.provideService(Catalog.Service, catalog),
+              Effect.provideService(CapabilityCatalog.Service, capabilities),
               Effect.provideService(CommandV2.Service, commands),
               Effect.provideService(Integration.Service, integration),
               Effect.provideService(AgentV2.Service, agents),
@@ -108,6 +113,7 @@ const layer = Layer.effectDiscard(
     yield* State.batch(
       Effect.gen(function* () {
         yield* add(ConfigReferencePlugin.Plugin)
+        yield* add(CapabilityPlugin.Plugin)
         yield* add(AgentPlugin.Plugin)
         yield* add(CommandPlugin.Plugin)
         yield* add(SkillPlugin.Plugin)
@@ -134,6 +140,7 @@ export const node = makeLocationNode({
   layer,
   deps: [
     Catalog.node,
+    CapabilityCatalog.node,
     CommandV2.node,
     PluginV2.node,
     Integration.node,

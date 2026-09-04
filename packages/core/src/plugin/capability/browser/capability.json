@@ -1,0 +1,45 @@
+{
+  "id": "browser",
+  "version": 1,
+  "description": "Interact with web applications in a real browser and preserve evidence of verified outcomes.",
+  "platforms": ["darwin", "linux"],
+  "skills": [
+    {
+      "name": "browser-testing",
+      "description": "Turn user-visible browser outcomes into repeatable checks with screenshots and diagnostic evidence.",
+      "path": "browser-testing.md"
+    }
+  ],
+  "runtimes": [
+    {
+      "id": "playwright",
+      "type": "mcp",
+      "command": ["npx", "-y", "@playwright/mcp@0.0.80"],
+      "timeoutMs": 30000
+    },
+    {
+      "id": "chrome-devtools",
+      "type": "mcp",
+      "command": ["npx", "-y", "chrome-devtools-mcp@1.8.0"],
+      "timeoutMs": 30000
+    }
+  ],
+  "profiles": {
+    "default": {
+      "description": "Navigate, inspect, interact with, and screenshot web pages through Playwright.",
+      "skills": ["browser-testing"],
+      "runtimes": ["playwright"]
+    },
+    "diagnostics": {
+      "description": "Inspect console, network, sources, and performance through Chrome DevTools.",
+      "skills": ["browser-testing"],
+      "runtimes": ["chrome-devtools"]
+    }
+  },
+  "dependencies": [
+    {
+      "id": "node",
+      "check": ["node", "--version"]
+    }
+  ]
+}
