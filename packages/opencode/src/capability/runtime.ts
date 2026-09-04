@@ -23,7 +23,13 @@ const layer = Layer.effect(
     const runtimes = yield* InstanceState.make(
       Effect.fn("CapabilityRuntime.state")(function* () {
         const bridge = yield* EffectBridge.make()
-        const owners = new Map<string, MCP.Registration>()
+        const owners = new Map<string, { readonly lineage: string; readonly registrations: Set<MCP.Registration> }>()
+        const releaseOwnership = (registration: MCP.Registration) => {
+          for (const [name, owner] of owners) {
+            if (!owner.registrations.delete(registration)) continue
+            if (owner.registrations.size === 0) owners.delete(name)
+          }
+        }
 
         return yield* CoreCapabilityRuntime.make({
           start: (key, definition) => {
@@ -31,12 +37,13 @@ const layer = Layer.effect(
             let registration: MCP.Registration | undefined
             const cleanup = Effect.gen(function* () {
               if (!registration) return
-              for (const [name, owner] of owners) if (owner === registration) owners.delete(name)
+              releaseOwnership(registration)
               yield* mcp.remove(registration).pipe(Effect.catchTag("MCP.NotFoundError", () => Effect.void))
             })
             return Effect.gen(function* () {
               if (definition.type !== "mcp") throw new Error(`Unsupported capability runtime type: ${definition.type}`)
               if (runtimeID(key) !== definition.id) throw new Error(`Capability runtime key does not match: ${key}`)
+              const lineage = `${packID(key)}\0${runtimeID(key)}`
               if (yield* mcp.connection(server)) throw new Error(`MCP server name is already registered: ${server}`)
               const existing = new Set(Object.keys(yield* mcp.tools()))
               const added = yield* mcp.add(server, mcpConfig(definition), { hidden: true })
@@ -63,12 +70,16 @@ const layer = Layer.effect(
                 (name, index) =>
                   names.indexOf(name) !== index ||
                   existing.has(name) ||
-                  (owners.has(name) && owners.get(name) !== owned),
+                  (owners.has(name) && owners.get(name)?.lineage !== lineage),
               )
               if (collision) {
                 throw new Error(`Canonical tool name collision: ${collision}`)
               }
-              for (const name of names) owners.set(name, owned)
+              for (const name of names) {
+                const owner = owners.get(name)
+                if (owner) owner.registrations.add(owned)
+                else owners.set(name, { lineage, registrations: new Set([owned]) })
+              }
 
               const definitions = Object.freeze(
                 upstream.map((definition, index) =>
@@ -82,7 +93,7 @@ const layer = Layer.effect(
               )
               const stop = bridge.run(
                 Effect.gen(function* () {
-                  for (const name of names) if (owners.get(name) === owned) owners.delete(name)
+                  releaseOwnership(owned)
                   yield* mcp.remove(owned).pipe(Effect.catchTag("MCP.NotFoundError", () => Effect.void))
                 }),
               )

@@ -39,7 +39,7 @@ const definition = (url: string, input: Partial<CapabilityManifest.Runtime> = {}
     ...input,
   })
 
-function serveMcp(tools: ReadonlyArray<Tool>) {
+function serveMcp(tools: ReadonlyArray<Tool>, version = "called") {
   return Effect.acquireRelease(
     Effect.promise(async () => {
       const protocol = new Server(
@@ -48,7 +48,7 @@ function serveMcp(tools: ReadonlyArray<Tool>) {
       )
       protocol.setRequestHandler(ListToolsRequestSchema, () => Promise.resolve({ tools: [...tools] }))
       protocol.setRequestHandler(CallToolRequestSchema, (request) =>
-        Promise.resolve({ content: [{ type: "text" as const, text: `called:${request.params.name}` }] }),
+        Promise.resolve({ content: [{ type: "text" as const, text: `${version}:${request.params.name}` }] }),
       )
       const transport = new WebStandardStreamableHTTPServerTransport({
         sessionIdGenerator: () => crypto.randomUUID(),
@@ -90,6 +90,39 @@ it.instance("starts a manifest-owned MCP and exposes immutable canonical definit
     expect(Object.isFrozen(tools[0])).toBe(true)
     expect(yield* tools[0]!.call({ url: "https://example.com" })).toMatchObject({
       content: [{ type: "text", text: "called:navigate" }],
+    })
+  }),
+)
+
+it.instance("starts a changed capability runtime while another session still holds the old version", () =>
+  Effect.gen(function* () {
+    const oldServer = yield* serveMcp([{ name: "navigate", inputSchema: { type: "object" } }], "old")
+    const newServer = yield* serveMcp([{ name: "navigate", inputSchema: { type: "object" } }], "new")
+    const runtime = yield* CoreCapabilityRuntime.Service
+    const oldKey = "browser/playwright#old-fingerprint"
+    const newKey = "browser/playwright#new-fingerprint"
+    const activationA = yield* runtime.activate([{ key: oldKey, definition: definition(oldServer.url) }])
+    const activationB = yield* runtime.activate([{ key: newKey, definition: definition(newServer.url) }])
+    if (activationA.state === "failed" || activationB.state === "failed") throw new Error("Runtime activation failed")
+    const sessionA = activationA.references[0]
+    const sessionB = activationB.references[0]
+
+    expect(CapabilityRuntime.tools(sessionA).map((tool) => tool.name)).toEqual(["browser_playwright_navigate"])
+    expect(CapabilityRuntime.tools(sessionB).map((tool) => tool.name)).toEqual(["browser_playwright_navigate"])
+    expect(yield* CapabilityRuntime.tools(sessionA)[0].call({ url: "https://old.example" })).toMatchObject({
+      content: [{ type: "text", text: "old:navigate" }],
+    })
+    expect(yield* CapabilityRuntime.tools(sessionB)[0].call({ url: "https://new.example" })).toMatchObject({
+      content: [{ type: "text", text: "new:navigate" }],
+    })
+    expect((yield* runtime.status(sessionA.key)).references).toBe(1)
+    expect((yield* runtime.status(sessionB.key)).references).toBe(1)
+
+    yield* runtime.release(sessionA)
+    expect((yield* runtime.status(sessionA.key)).references).toBe(0)
+    expect((yield* runtime.status(sessionB.key)).references).toBe(1)
+    expect(yield* CapabilityRuntime.tools(sessionB)[0].call({ url: "https://still-new.example" })).toMatchObject({
+      content: [{ type: "text", text: "new:navigate" }],
     })
   }),
 )

@@ -136,3 +136,35 @@ tsgo --noEmit: exit 0
 ```
 
 The isolated test completed in 503.62 ms. Targeted lint completed with 0 errors, and `git diff --check` passed before commit.
+
+## Review Fix Round 3
+
+### Finding Addressed
+
+The real OpenCode MCP adapter now tracks canonical tool ownership by capability runtime lineage plus a set of registration tokens. Fingerprinted old and new definitions of the same pack/runtime lineage may coexist, while configured MCP tools, duplicate upstream names, and ownership by a different lineage remain collisions. Cleanup removes only the matching registration token and deletes the canonical ownership entry only after its final registration is gone, preserving stale-write and unrelated-tool protections.
+
+### Review RED Evidence
+
+The new OpenCode adapter regression started an old fingerprinted `browser/playwright` MCP, retained its Session A reference, then activated the changed fingerprint for Session B. Before the fix, Session B failed with `CapabilityRuntime.AcquisitionError: Canonical tool name collision: browser_playwright_navigate`.
+
+### Review GREEN Evidence
+
+The adapter regression now proves both old and new definitions can be called through their real hidden MCP registrations, both references remain held concurrently, releasing Session A drops only the old reference, and Session B's new tool continues to execute.
+
+From `packages/core`:
+
+```text
+bun test test/tool-capability.test.ts test/system-context/builtins.test.ts test/location-layer.test.ts test/capability/materialization.test.ts test/application-tools.test.ts test/permission.test.ts && bun typecheck
+56 pass, 0 fail
+tsgo --noEmit: exit 0
+```
+
+The combined OpenCode location-callsite run completed with 131 passed, 1 intentional skip, and the known 10-second timeout in `applies plugin shell environment before forced PTY values`. The isolated PTY rerun and OpenCode typecheck succeeded:
+
+```text
+bun test --timeout 10000 test/server/httpapi-v2-pty.test.ts && bun typecheck
+4 pass, 0 fail
+tsgo --noEmit: exit 0
+```
+
+The focused real-adapter suite passed 7 tests. Targeted lint completed with 0 errors; remaining warnings predate this round. `git diff --check` passed before commit.
