@@ -12,5 +12,10 @@ const replacements: LayerNode.Replacements = [[CoreCapabilityRuntime.node, adapt
 
 export const locationServices = LayerNode.hoist(coreLocationServices, Node.tags.values.global, replacements)
 export const locationServiceMapLayer = buildLocationServiceMap(replacements)
+export const locationServiceMapNode = LayerNode.make({
+  service: LocationServiceMap.Service,
+  layer: locationServiceMapLayer,
+  deps: [],
+})
 
 export { LocationServiceMap }

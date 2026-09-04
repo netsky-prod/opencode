@@ -130,11 +130,17 @@ const layer = Layer.effectDiscard(
               }
             }
             const result = yield* process
-              .run(ChildProcess.make(command, args, { cwd: pack.directory, stdin: "ignore" }), {
-                timeout: PROBE_TIMEOUT,
-                maxOutputBytes: 0,
-                maxErrorBytes: 1_024,
-              })
+              .run(
+                ChildProcess.make(command, args, {
+                  cwd: pack.source === "builtin" ? globalThis.process.cwd() : pack.directory,
+                  stdin: "ignore",
+                }),
+                {
+                  timeout: PROBE_TIMEOUT,
+                  maxOutputBytes: 0,
+                  maxErrorBytes: 1_024,
+                },
+              )
               .pipe(Effect.result)
             if (Result.isSuccess(result) && result.success.exitCode === 0) {
               return { id: dependency.id, state: "available" as const, checkedAt }

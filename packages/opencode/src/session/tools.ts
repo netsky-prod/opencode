@@ -1,5 +1,6 @@
 import { Agent } from "@/agent/agent"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
+import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { Provider } from "@/provider/provider"
 import { ProviderTransform } from "@/provider/transform"
 import { MCP } from "@/mcp"
@@ -14,15 +15,25 @@ import { Plugin } from "@/plugin"
 import type { TaskPromptOps } from "@/tool/task"
 import { type Tool as AITool, tool, jsonSchema, type ToolExecutionOptions, asSchema } from "ai"
 import { Effect } from "effect"
-import { MessageV2 } from "./message-v2"
 import { Session } from "./session"
 import { SessionProcessor } from "./processor"
 import { PartID } from "./schema"
 import { EffectBridge } from "@/effect/bridge"
-import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { isRecord } from "@/util/record"
 import { RuntimeFlags } from "@/effect/runtime-flags"
+import { LocationServiceMap } from "@/location-services"
+import { Location } from "@opencode-ai/core/location"
+import { AbsolutePath } from "@opencode-ai/core/schema"
+import { ToolRegistry as CoreToolRegistry } from "@opencode-ai/core/tool/registry"
+import { CapabilityCatalog } from "@opencode-ai/core/capability/catalog"
+import { CapabilityState } from "@opencode-ai/core/capability/state"
+import { PluginV2 } from "@opencode-ai/core/plugin"
+import { AgentV2 } from "@opencode-ai/core/agent"
+import { SessionV2 } from "@opencode-ai/core/session"
+import { SessionMessage } from "@opencode-ai/core/session/message"
+import type { PermissionV2 } from "@opencode-ai/core/permission"
+import type { ToolDefinition } from "@opencode-ai/llm"
 
 const MCP_RESOURCE_TOOLS = {
   list: "list_mcp_resources",
@@ -38,7 +49,7 @@ const SUPPORTED_MCP_RESOURCE_ATTACHMENT_MIMES = new Set([
   "image/webp",
 ])
 
-export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
+type ResolveInput = {
   agent: Agent.Info
   model: Provider.Model
   session: Session.Info
@@ -46,7 +57,9 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
   bypassAgentCheck: boolean
   messages: SessionV1.WithParts[]
   promptOps: TaskPromptOps
-}) {
+}
+
+export const resolve = Effect.fn("SessionTools.resolve")(function* (input: ResolveInput) {
   const tools: Record<string, AITool> = {}
   const run = yield* EffectBridge.make()
   const plugin = yield* Plugin.Service
@@ -55,6 +68,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
   const mcp = yield* MCP.Service
   const truncate = yield* Truncate.Service
   const flags = yield* RuntimeFlags.Service
+  const locations = yield* LocationServiceMap.Service
 
   const context = (args: Record<string, unknown>, options: ToolExecutionOptions): Tool.Context => ({
     sessionID: input.session.id,
@@ -131,6 +145,41 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
         )
       },
     })
+  }
+
+  const bridgedEffect = coreTools({
+    session: input.session,
+    permissions: Permission.merge(input.agent.permission, input.session.permission ?? []),
+  }).pipe(
+    Effect.provide(
+      locations.get(
+        Location.Ref.make({
+          directory: AbsolutePath.make(input.session.directory),
+          workspaceID: input.session.workspaceID,
+        }),
+      ),
+    ),
+    Effect.scoped,
+  )
+  const bridged = yield* bridgedEffect
+  const legacySkill = tools.skill
+  for (const item of bridged.definitions) {
+    if (item.name === "skill") {
+      const capabilitySkill = coreTool(item, bridged.materialization, input, context, plugin, run)
+      tools.skill = tool({
+        description: legacySkill?.description ?? item.description,
+        inputSchema: legacySkill?.inputSchema ?? capabilitySkill.inputSchema,
+        execute(args, options) {
+          const name = isRecord(args) && typeof args.name === "string" ? args.name : undefined
+          if (name && bridged.skillNames.has(name)) return capabilitySkill.execute!(args, options)
+          if (legacySkill?.execute) return legacySkill.execute(args, options)
+          return capabilitySkill.execute!(args, options)
+        },
+      })
+      continue
+    }
+    if (tools[item.name]) continue
+    tools[item.name] = coreTool(item, bridged.materialization, input, context, plugin, run)
   }
 
   const hasMcpResourceServer = Object.values(yield* mcp.clients()).some(
@@ -491,6 +540,131 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
 
   return tools
 })
+
+const capabilityTools = new Set(["capability_search", "capability_enable", "capability_disable", "capability_status"])
+
+function coreTools(input: { session: Session.Info; permissions: PermissionV1.Ruleset }) {
+  return Effect.gen(function* () {
+    const plugin = yield* PluginV2.Service
+    yield* plugin.wait(PluginV2.ID.make("capability"))
+    const registry = yield* CoreToolRegistry.Service
+    const state = yield* CapabilityState.Service
+    const catalog = yield* CapabilityCatalog.Service
+    const sessionID = SessionV2.ID.make(input.session.id)
+    const materialization = yield* registry.materialize(sessionID, corePermissions(input.permissions))
+    const activations = yield* state.list(sessionID)
+    const prefixes = new Set<string>()
+    const skillNames = new Set<string>()
+    for (const activation of activations) {
+      const pack = yield* catalog.get(activation.id)
+      if (!pack) continue
+      for (const profileID of activation.profiles) {
+        const profile = Object.entries(pack.profiles).find(([id]) => id === profileID)?.[1]
+        if (!profile) continue
+        for (const runtime of profile.runtimes) prefixes.add(`${pack.id}_${runtime}_`)
+        for (const skill of profile.skills) skillNames.add(skill)
+      }
+    }
+    const definitions = materialization.definitions.filter(
+      (definition) =>
+        capabilityTools.has(definition.name) ||
+        (definition.name === "skill" && skillNames.size > 0) ||
+        [...prefixes].some((prefix) => definition.name.startsWith(prefix)),
+    )
+    return { materialization, definitions, skillNames }
+  })
+}
+
+function corePermissions(rules: PermissionV1.Ruleset): PermissionV2.Ruleset {
+  return rules.map((rule) => ({ action: rule.permission, resource: rule.pattern, effect: rule.action }))
+}
+
+function coreTool(
+  item: ToolDefinition,
+  materialization: CoreToolRegistry.Materialization,
+  input: ResolveInput,
+  context: (args: Record<string, unknown>, options: ToolExecutionOptions) => Tool.Context,
+  plugin: Plugin.Interface,
+  run: EffectBridge.Shape,
+): AITool {
+  const schema = ProviderTransform.schema(input.model, item.inputSchema)
+  return tool({
+    description: item.description,
+    inputSchema: jsonSchema(schema),
+    execute(args, options) {
+      return run.promise(
+        Effect.gen(function* () {
+          const values = toRecord(args)
+          const ctx = context(values, options)
+          yield* plugin.trigger(
+            "tool.execute.before",
+            { tool: item.name, sessionID: ctx.sessionID, callID: ctx.callID },
+            { args },
+          )
+          const resource = item.name === "skill" && typeof values.name === "string" ? values.name : "*"
+          yield* ctx.ask({
+            permission: item.name,
+            metadata: {},
+            patterns: [resource],
+            always: [resource],
+          })
+          const settlement = yield* materialization.settle({
+            sessionID: SessionV2.ID.make(input.session.id),
+            agent: AgentV2.ID.make(input.agent.name),
+            assistantMessageID: SessionMessage.ID.make(input.processor.message.id),
+            call: { type: "tool-call", id: options.toolCallId, name: item.name, input: args },
+          })
+          if (settlement.result.type === "error") throw new Error(resultText(settlement.result.value))
+          const output = legacyOutput(item, settlement, input)
+          yield* plugin.trigger(
+            "tool.execute.after",
+            { tool: item.name, sessionID: ctx.sessionID, callID: ctx.callID, args },
+            output,
+          )
+          if (options.abortSignal?.aborted) {
+            yield* input.processor.completeToolCall(options.toolCallId, output)
+          }
+          return output
+        }),
+      )
+    },
+  })
+}
+
+function legacyOutput(item: ToolDefinition, settlement: CoreToolRegistry.Settlement, input: ResolveInput) {
+  const content = settlement.output?.content ?? (settlement.result.type === "content" ? settlement.result.value : [])
+  const text = content.filter((part) => part.type === "text").map((part) => part.text)
+  const fallback = settlement.result.type === "content" ? "" : resultText(settlement.result.value)
+  const structured = settlement.output?.structured ?? (settlement.result.type === "json" ? settlement.result.value : {})
+  return {
+    title: item.name,
+    metadata: {
+      structured,
+      ...(settlement.outputPaths && settlement.outputPaths.length > 0 ? { outputPaths: settlement.outputPaths } : {}),
+    },
+    output: text.length > 0 ? text.join("\n\n") : fallback,
+    attachments: content
+      .filter((part) => part.type === "file")
+      .map((part) => ({
+        type: "file" as const,
+        mime: part.mime,
+        url: part.uri,
+        filename: part.name,
+        id: PartID.ascending(),
+        sessionID: input.session.id,
+        messageID: input.processor.message.id,
+      })),
+  }
+}
+
+function resultText(value: unknown) {
+  if (typeof value === "string") return value
+  try {
+    return JSON.stringify(value, null, 2) ?? String(value)
+  } catch {
+    return String(value)
+  }
+}
 
 function toRecord(value: unknown) {
   if (isRecord(value)) return value

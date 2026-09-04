@@ -56,6 +56,7 @@ import { SessionTable } from "@opencode-ai/core/session/sql"
 import { SessionReminders } from "./reminders"
 import { SessionTools } from "./tools"
 import { LLMEvent } from "@opencode-ai/llm"
+import { LocationServiceMap, locationServiceMapNode } from "@/location-services"
 
 // @ts-ignore
 globalThis.AI_SDK_LOG_WARNINGS = false
@@ -140,6 +141,7 @@ const layer = Layer.effect(
     const events = yield* EventV2Bridge.Service
     const flags = yield* RuntimeFlags.Service
     const database = yield* Database.Service
+    const locations = yield* LocationServiceMap.Service
     const { db } = database
     const ops = Effect.fn("SessionPrompt.ops")(function* () {
       return {
@@ -1238,6 +1240,7 @@ const layer = Layer.effect(
               Effect.provideService(MCP.Service, mcp),
               Effect.provideService(Truncate.Service, truncate),
               Effect.provideService(RuntimeFlags.Service, flags),
+              Effect.provideService(LocationServiceMap.Service, locations),
             )
 
             if (lastUser.format?.type === "json_schema") {
@@ -1625,6 +1628,7 @@ export const node = LayerNode.make({
     EventV2Bridge.node,
     RuntimeFlags.node,
     Database.node,
+    locationServiceMapNode,
   ],
 })
 

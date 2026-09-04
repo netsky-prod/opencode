@@ -19,7 +19,7 @@ import { Permission } from "@/permission"
 import { Skill } from "@/skill"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { Location } from "@opencode-ai/core/location"
-import { LocationServiceMap, locationServiceMapLayer } from "@/location-services"
+import { LocationServiceMap, locationServiceMapNode } from "@/location-services"
 import { Reference } from "@opencode-ai/core/reference"
 import { MCP } from "@/mcp"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
@@ -136,12 +136,6 @@ const layer = Layer.effect(
     })
   }),
 )
-
-const locationServiceMapNode = LayerNode.make({
-  service: LocationServiceMap.Service,
-  layer: locationServiceMapLayer,
-  deps: [],
-})
 
 export const node = LayerNode.make({
   service: Service,

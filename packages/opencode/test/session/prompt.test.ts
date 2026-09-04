@@ -9,6 +9,7 @@ import { expect } from "bun:test"
 import { Cause, Deferred, Duration, Effect, Exit, Fiber, Layer } from "effect"
 import path from "path"
 import { fileURLToPath } from "url"
+import fs from "node:fs/promises"
 import { NamedError } from "@opencode-ai/core/util/error"
 import { Agent as AgentSvc } from "../../src/agent/agent"
 import { BackgroundJob } from "@/background/job"
@@ -35,6 +36,7 @@ import { SessionSummary } from "../../src/session/summary"
 import { Instruction } from "../../src/session/instruction"
 import { SessionProcessor } from "../../src/session/processor"
 import { SessionPrompt } from "../../src/session/prompt"
+import { SessionTools } from "../../src/session/tools"
 import { SessionRevert } from "../../src/session/revert"
 import { SessionRunState } from "../../src/session/run-state"
 import { MessageID, PartID, SessionID } from "../../src/session/schema"
@@ -56,7 +58,7 @@ import { reply, TestLLMServer } from "../lib/llm-server"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
-import { LocationServiceMap, locationServiceMapLayer } from "../../src/location-services"
+import { LocationServiceMap, locationServiceMapLayer, locationServiceMapNode } from "../../src/location-services"
 
 const summary = Layer.succeed(
   SessionSummary.Service,
@@ -213,6 +215,7 @@ const promptRoot = LayerNode.group([
   SystemPrompt.node,
   CrossSpawnSpawner.node,
   RuntimeFlags.node,
+  locationServiceMapNode,
 ])
 
 function makePrompt(input?: { mcpInstructions?: MCP.ServerInstructions[]; processor?: "blocking" }) {
@@ -327,6 +330,43 @@ const useServerConfig = Effect.fn("test.useServerConfig")(function* (config: (ur
   const llm = yield* TestLLMServer
   yield* writeConfig(dir, config(llm.url))
   return { dir, llm }
+})
+
+function capabilityFixturePath(directory: string) {
+  return Effect.acquireRelease(
+    Effect.promise(async () => {
+      const previous = process.env.PATH
+      const bin = path.join(directory, "capability-bin")
+      const npx = path.join(bin, "npx")
+      const node = path.join(bin, "node")
+      const fixture = path.join(import.meta.dir, "../fixture/capability-playwright-stdio.ts")
+      await fs.mkdir(bin, { recursive: true })
+      await Bun.write(
+        npx,
+        [
+          `#!${process.execPath}`,
+          'if (process.argv[2] !== "-y" || process.argv[3] !== "@playwright/mcp@0.0.80") process.exit(64)',
+          `await import(${JSON.stringify(fixture)})`,
+        ].join("\n"),
+      )
+      await Bun.write(node, "#!/bin/sh\necho v22.0.0\n")
+      await fs.chmod(npx, 0o755)
+      await fs.chmod(node, 0o755)
+      process.env.PATH = `${bin}${path.delimiter}${previous ?? ""}`
+      return previous
+    }),
+    (previous) =>
+      Effect.sync(() => {
+        if (previous === undefined) delete process.env.PATH
+        else process.env.PATH = previous
+      }),
+  )
+}
+
+const capabilityToolOptions = (toolCallId: string) => ({
+  toolCallId,
+  messages: [],
+  abortSignal: new AbortController().signal,
 })
 
 // Wait for a session's runner to enter a busy state. SessionStatus is flipped
@@ -1048,6 +1088,117 @@ noLLMServer.instance("prompt tools replace previous prompt tool rules", () =>
     expect(reloaded.permission).toEqual([{ permission: "read", pattern: "*", action: "allow" }])
     expect(Permission.evaluate("bash", "anything", reloaded.permission ?? []).action).toBe("ask")
   }),
+)
+
+noLLMServer.instance(
+  "session tools bridge capability packs on the next turn without leaking across sessions",
+  () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* capabilityFixturePath(test.directory)
+      const sessions = yield* Session.Service
+      const agents = yield* AgentSvc.Service
+      const providers = yield* ProviderSvc.Service
+      const agent = yield* agents.get("build")
+      const model = yield* providers.getModel(ref.providerID, ref.modelID)
+      const first = yield* sessions.create({ title: "Capability bridge" })
+      const second = yield* sessions.create({ title: "Capability isolation" })
+      const firstTurn = yield* seed(first.id)
+      const secondTurn = yield* seed(second.id)
+      const promptOps = {
+        cancel: () => Effect.void,
+        resolvePromptParts: (template: string) => Effect.succeed([{ type: "text" as const, text: template }]),
+        prompt: () => Effect.die("unexpected nested prompt"),
+      }
+      const resolveTools = (session: Session.Info, message: SessionV1.Assistant) =>
+        SessionTools.resolve({
+          agent,
+          model,
+          session,
+          processor: {
+            message,
+            updateToolCall: () => Effect.succeed(undefined),
+            completeToolCall: () => Effect.void,
+          },
+          bypassAgentCheck: false,
+          messages: [],
+          promptOps,
+        })
+
+      const before = yield* resolveTools(first, firstTurn.assistant)
+      expect(Object.keys(before).filter((name) => name.startsWith("capability_"))).toEqual([
+        "capability_search",
+        "capability_enable",
+        "capability_disable",
+        "capability_status",
+      ])
+      const enabled = yield* Effect.promise(() =>
+        before.capability_enable.execute!(
+          { id: "browser", profiles: ["default"] },
+          capabilityToolOptions("call-enable-browser"),
+        ),
+      )
+      expect(enabled).toMatchObject({ metadata: { structured: { id: "browser", state: "active", nextTurn: true } } })
+      expect(Object.keys(before).filter((name) => name.startsWith("browser_"))).toEqual([])
+
+      const next = yield* resolveTools(first, firstTurn.assistant)
+      expect(
+        Object.keys(next)
+          .filter((name) => name.startsWith("browser_"))
+          .toSorted(),
+      ).toEqual([
+        "browser_playwright_browser_navigate",
+        "browser_playwright_browser_snapshot",
+        "browser_playwright_browser_take_screenshot",
+      ])
+      expect(Object.keys(next).some((name) => name.startsWith("browser_chrome-devtools_"))).toBe(false)
+      const page = "data:text/html,%3Ch1%3ECapability%20bridge%3C%2Fh1%3E"
+      yield* Effect.promise(() =>
+        next.browser_playwright_browser_navigate.execute!(
+          { url: page },
+          capabilityToolOptions("call-browser-navigate"),
+        ),
+      )
+      const snapshot = yield* Effect.promise(() =>
+        next.browser_playwright_browser_snapshot.execute!({}, capabilityToolOptions("call-browser-snapshot")),
+      )
+      expect(snapshot).toMatchObject({
+        metadata: { structured: { url: page, text: "<h1>Capability bridge</h1>" } },
+      })
+      const screenshot = path.join(test.directory, "capability-bridge.png")
+      const captured = yield* Effect.promise(() =>
+        next.browser_playwright_browser_take_screenshot.execute!(
+          { filename: screenshot },
+          capabilityToolOptions("call-browser-screenshot"),
+        ),
+      )
+      expect(captured).toMatchObject({
+        metadata: { structured: { path: screenshot, url: page } },
+        attachments: [{ type: "file", mime: "image/png", url: expect.stringContaining("data:image/png;base64,") }],
+      })
+      expect(yield* Effect.promise(() => Bun.file(screenshot).exists())).toBe(true)
+      const skill = yield* Effect.promise(() =>
+        next.skill.execute!({ name: "browser-testing" }, capabilityToolOptions("call-browser-skill")),
+      )
+      expect(skill).toMatchObject({ output: expect.stringContaining("Save a screenshot for the final verified state") })
+
+      const isolated = yield* resolveTools(second, secondTurn.assistant)
+      expect(Object.keys(isolated).filter((name) => name.startsWith("capability_"))).toHaveLength(4)
+      expect(Object.keys(isolated)).not.toContain("browser_playwright_browser_navigate")
+
+      yield* Effect.promise(() =>
+        next.capability_disable.execute!({ id: "browser" }, capabilityToolOptions("call-disable-browser")),
+      )
+      const stale = yield* Effect.tryPromise({
+        try: () =>
+          next.browser_playwright_browser_snapshot.execute!({}, capabilityToolOptions("call-stale-browser-snapshot")),
+        catch: (error) => error,
+      }).pipe(Effect.exit)
+      expect(Exit.isFailure(stale) ? Cause.pretty(stale.cause) : "").toContain("Stale tool call")
+      const disabled = yield* resolveTools(first, firstTurn.assistant)
+      expect(Object.keys(disabled)).not.toContain("browser_playwright_browser_navigate")
+    }),
+  { config: cfg },
 )
 
 it.instance(

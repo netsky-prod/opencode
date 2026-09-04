@@ -2,6 +2,8 @@ import { Effect, Layer, LayerMap } from "effect"
 import { AgentV2 } from "./agent"
 import { AISDK } from "./aisdk"
 import { Catalog } from "./catalog"
+import { CapabilityCatalog } from "./capability/catalog"
+import { CapabilityState } from "./capability/state"
 import { CommandV2 } from "./command"
 import { Config } from "./config"
 import { LayerNode } from "./effect/layer-node"
@@ -49,6 +51,8 @@ export const locationServices = LayerNode.group([
   Reference.node,
   Integration.node,
   Catalog.node,
+  CapabilityCatalog.node,
+  CapabilityState.node,
   AISDK.node,
   PluginV2.node,
   PluginInternal.node,

@@ -70,7 +70,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     structuredContent = { path: filename, url: current?.url }
   }
   return {
-    content: [{ type: "text" as const, text: JSON.stringify(structuredContent) }],
+    content: [
+      { type: "text" as const, text: JSON.stringify(structuredContent) },
+      ...(request.params.name === "browser_take_screenshot"
+        ? [{ type: "image" as const, mimeType: "image/png", data: Buffer.from(screenshot).toString("base64") }]
+        : []),
+    ],
     structuredContent,
   }
 })
