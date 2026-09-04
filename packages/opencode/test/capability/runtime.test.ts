@@ -6,6 +6,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema, type Tool } from "@model
 import { CapabilityManifest } from "@opencode-ai/core/capability/manifest"
 import { CapabilityRuntime as CoreCapabilityRuntime } from "@opencode-ai/core/capability/runtime"
 import { Node } from "@opencode-ai/core/effect/app-node"
+import { EventV2 } from "@opencode-ai/core/event"
 import { CapabilityTool } from "@opencode-ai/core/tool/capability"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Effect, Exit } from "effect"
@@ -15,7 +16,7 @@ import { MCP } from "../../src/mcp"
 import { testEffect } from "../lib/effect"
 
 const stdioFixture = path.join(import.meta.dir, "../fixture/mcp-lifecycle-stdio.ts")
-const it = testEffect(LayerNode.compile(LayerNode.group([MCP.node, CapabilityRuntime.node])))
+const it = testEffect(LayerNode.compile(LayerNode.group([EventV2.node, MCP.node, CapabilityRuntime.node])))
 
 test("the OpenCode adapter satisfies Core capability-tool composition", () => {
   const composed = LayerNode.hoist(CapabilityTool.node, Node.tags.values.global, [
@@ -117,6 +118,28 @@ it.instance("starts a manifest-owned MCP and exposes immutable canonical definit
     expect(yield* tools[0].call({ url: "https://example.com" })).toMatchObject({
       content: [{ type: "text", text: "called:navigate" }],
     })
+  }),
+)
+
+it.instance("publishes the Core runtime lifecycle without exposing the remote endpoint", () =>
+  Effect.gen(function* () {
+    const server = yield* serveMcp([{ name: "navigate", inputSchema: { type: "object" } }])
+    const runtime = yield* CoreCapabilityRuntime.Service
+    const events = yield* EventV2.Service
+    const observed: EventV2.Payload[] = []
+    const unsubscribe = yield* events.listen((event) =>
+      Effect.sync(() => {
+        if (event.type.startsWith("capability.runtime.")) observed.push(event)
+      }),
+    )
+
+    yield* runtime.acquire("browser/playwright#private-host-reference", definition(server.url))
+    yield* unsubscribe
+
+    expect(observed.map((event) => event.type)).toEqual(["capability.runtime.started"])
+    expect(observed[0]?.data).toMatchObject({ runtimeID: "playwright", state: "healthy", referenceCount: 1 })
+    expect(JSON.stringify(observed)).not.toContain(server.url)
+    expect(JSON.stringify(observed)).not.toContain("private-host-reference")
   }),
 )
 

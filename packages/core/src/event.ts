@@ -15,6 +15,18 @@ export const ID = Event.ID
 export type ID = import("@opencode-ai/schema/event").ID
 export type { Data, Definition, Payload } from "@opencode-ai/schema/event"
 
+const privateRouting = new WeakMap<object, Location.Ref>()
+const privateRoutingOption = Symbol("EventV2.privateRouting")
+
+/** Process-local routing metadata that is intentionally absent from the serializable event envelope. */
+export const routingLocation = (event: Payload): Location.Ref | undefined => privateRouting.get(event)
+
+/** Adds process-local routing without introducing a serializable option key or public envelope field. */
+export const withPrivateRouting = (options: PublishOptions | undefined, location: Location.Ref): PublishOptions => ({
+  ...options,
+  [privateRoutingOption]: location,
+})
+
 export type Subscriber<D extends Definition = Definition> = (event: Payload<D>) => Effect.Effect<void>
 export type Unsubscribe = Effect.Effect<void>
 
@@ -118,7 +130,9 @@ export const versionedType = Event.versionedType
 export interface PublishOptions {
   readonly id?: ID
   readonly metadata?: Record<string, unknown>
-  readonly location?: Location.Ref
+  /** Override the ambient location, or explicitly suppress it for privacy-sensitive operational events. */
+  readonly location?: Location.Ref | false
+  readonly [privateRoutingOption]?: Location.Ref
   /** Local operational projection committed atomically with a new durable event. Not replayed or serialized. */
   readonly commit?: (seq: number) => Effect.Effect<void>
 }
@@ -376,6 +390,7 @@ export const layerWith = (options?: LayerOptions) =>
               }),
             )
           if (definition?.durable) {
+            const route = privateRouting.get(event)
             const committed = yield* commitDurableEvent(definition, event as Payload, undefined, commit)
             if (committed) {
               event = {
@@ -386,6 +401,7 @@ export const layerWith = (options?: LayerOptions) =>
                   version: definition.durable.version,
                 },
               }
+              if (route) privateRouting.set(event, route)
               yield* notify(event as Payload, true)
               return event
             }
@@ -419,22 +435,29 @@ export const layerWith = (options?: LayerOptions) =>
       function publish<D extends Definition>(definition: D, data: Data<D>, options?: PublishOptions) {
         return Effect.gen(function* () {
           const serviceLocation = Option.getOrUndefined(yield* Effect.serviceOption(Location.Service))
-          const location =
-            options?.location ??
-            (serviceLocation
+          const privateLocation =
+            options?.[privateRoutingOption] ??
+            (options?.location === false && serviceLocation
               ? { directory: serviceLocation.directory, workspaceID: serviceLocation.workspaceID }
               : undefined)
-          return yield* publishEvent(
-            definition,
-            {
-              id: options?.id ?? ID.create(),
-              ...(options?.metadata ? { metadata: options.metadata } : {}),
-              type: definition.type,
-              ...(location ? { location } : {}),
-              data,
-            } as Payload<D>,
-            options?.commit,
-          )
+          const location =
+            options?.location === false
+              ? undefined
+              : (options?.location ??
+                (serviceLocation
+                  ? { directory: serviceLocation.directory, workspaceID: serviceLocation.workspaceID }
+                  : undefined))
+          const event = {
+            id: options?.id ?? ID.create(),
+            ...(options?.metadata ? { metadata: options.metadata } : {}),
+            type: definition.type,
+            ...(location ? { location } : {}),
+            data,
+          } as Payload<D>
+          if (privateLocation) privateRouting.set(event, privateLocation)
+          const published = yield* publishEvent(definition, event, options?.commit)
+          if (privateLocation && published !== event) privateRouting.set(published, privateLocation)
+          return published
         })
       }
 

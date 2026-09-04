@@ -32,11 +32,13 @@ function eventResponse(events: EventV2.Interface) {
     const unsubscribe = yield* events.listen((event) => Effect.sync(() => Queue.offerUnsafe(queue, event)))
     yield* Effect.addFinalizer(() => unsubscribe)
     const stream = Stream.fromQueue(queue).pipe(
-      Stream.filter(
-        (event) =>
-          event.location?.directory === instance.directory &&
-          (event.location.workspaceID === undefined || event.location.workspaceID === workspaceID),
-      ),
+      Stream.filter((event) => {
+        const location = event.location ?? EventV2.routingLocation(event)
+        return (
+          location?.directory === instance.directory &&
+          (location.workspaceID === undefined || location.workspaceID === workspaceID)
+        )
+      }),
       Stream.map((event) => ({ id: event.id, type: event.type, properties: event.data })),
     )
     const disposed = Stream.callback<{ id: string; type: string; properties: unknown }>((queue) => {

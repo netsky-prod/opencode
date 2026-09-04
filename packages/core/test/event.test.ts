@@ -123,6 +123,33 @@ describe("EventV2", () => {
     }),
   )
 
+  it.effect("preserves private routing when durable metadata clones the envelope", () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      const routes: Array<Location.Ref | undefined> = []
+      const received: EventV2.Payload[] = []
+      const unsubscribe = yield* events.listen((event) =>
+        Effect.sync(() => {
+          if (event.type !== SyncMessage.type) return
+          received.push(event)
+          routes.push(EventV2.routingLocation(event))
+        }),
+      )
+
+      const event = yield* events.publish(SyncMessage, { id: "private-route", text: "hello" }, { location: false })
+      yield* unsubscribe
+
+      expect(received).toEqual([event])
+      expect(event).not.toHaveProperty("location")
+      expect(routes).toEqual([
+        {
+          directory: AbsolutePath.make("project"),
+          workspaceID: WorkspaceV2.ID.make("wrk_test"),
+        },
+      ])
+    }),
+  )
+
   it.effect("selects the latest durable definition independent of declaration order", () =>
     Effect.sync(() => {
       const latest = EventV2.define({

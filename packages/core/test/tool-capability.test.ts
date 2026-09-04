@@ -8,6 +8,7 @@ import { CapabilityRuntime } from "@opencode-ai/core/capability/runtime"
 import { CapabilityState } from "@opencode-ai/core/capability/state"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { EventV2 } from "@opencode-ai/core/event"
 import { AppProcess } from "@opencode-ai/core/process"
 import { PermissionV2 } from "@opencode-ai/core/permission"
 import { AbsolutePath } from "@opencode-ai/core/schema"
@@ -154,10 +155,17 @@ let pausedList:
       readonly resume: Deferred.Deferred<void>
     }
   | undefined
+let catalogGetCalls = 0
+let activationTrace: string[] = []
 
 const catalog = CapabilityCatalog.Service.of({
   list: () => Effect.succeed(catalogPacks),
-  get: (id) => Effect.succeed(catalogPacks.find((item) => item.id === id)),
+  get: (id) =>
+    Effect.sync(() => {
+      catalogGetCalls++
+      activationTrace.push("catalog:get")
+      return catalogPacks.find((item) => item.id === id)
+    }),
   search: (_query, active) =>
     Effect.succeed([
       ...catalogPacks.filter((item) => !active.has(item.id)),
@@ -303,7 +311,13 @@ const sessions = Layer.mock(SessionStore.Service, {
 })
 
 const layer = AppNodeBuilder.build(
-  LayerNode.group([ApplicationTools.node, ToolRegistry.node, ToolRegistry.toolsNode, CapabilityTool.node]),
+  LayerNode.group([
+    EventV2.node,
+    ApplicationTools.node,
+    ToolRegistry.node,
+    ToolRegistry.toolsNode,
+    CapabilityTool.node,
+  ]),
   [
     [CapabilityCatalog.node, Layer.succeed(CapabilityCatalog.Service, catalog)],
     [CapabilityState.node, Layer.succeed(CapabilityState.Service, state)],
@@ -337,6 +351,8 @@ const reset = () => {
   permissionRequests = []
   deletedSessions = new Set()
   pausedList = undefined
+  catalogGetCalls = 0
+  activationTrace = []
 }
 
 const names = (materialized: ToolRegistry.Materialization) =>
@@ -496,6 +512,98 @@ describe("CapabilityTool", () => {
         }),
       ).toMatchObject({ result: { type: "error", value: "Permission denied: browser_playwright_navigate" } })
       expect(runtimeCalls).toBe(1)
+    }),
+  )
+
+  it.effect("emits activation outcomes without inputs, session identity, or runtime diagnostics", () =>
+    Effect.gen(function* () {
+      reset()
+      yieldRegistry = yield* ToolRegistry.Service
+      const eventBus = yield* EventV2.Service
+      const observed: EventV2.Payload[] = []
+      const unsubscribe = yield* eventBus.listen((event) =>
+        Effect.sync(() => {
+          if (event.type === "capability.startup.measured" || event.type.startsWith("capability.activation.")) {
+            observed.push(event)
+          }
+        }),
+      )
+
+      yield* call("capability_enable", { id: "browser", profile: "default", token: "input-secret" })
+      yield* call("capability_disable", { id: "browser" })
+      runtimeFailure = true
+      diagnostic = "private runtime failure at https://private-host.invalid/path"
+      yield* call("capability_enable", { id: "browser", profile: "default" })
+      denyRuntime = true
+      yield* call("capability_enable", { id: "browser-1", profile: "default" })
+      yield* unsubscribe
+
+      expect(
+        observed.filter((event) => event.type.startsWith("capability.activation.")).map((event) => event.type),
+      ).toEqual([
+        "capability.activation.requested",
+        "capability.activation.succeeded",
+        "capability.activation.requested",
+        "capability.activation.failed",
+        "capability.activation.requested",
+        "capability.activation.failed",
+      ])
+      expect(observed.filter((event) => event.type === "capability.startup.measured")).toHaveLength(3)
+      const serialized = JSON.stringify(observed)
+      expect(serialized).not.toContain(sessionID)
+      expect(serialized).not.toContain("input-secret")
+      expect(serialized).not.toContain("private-host")
+      expect(
+        observed.every((event) =>
+          Object.keys(event.data as Readonly<Record<string, unknown>>).every((key) => key !== "profiles"),
+        ),
+      ).toBe(true)
+    }),
+  )
+
+  it.effect("requests activation before one catalog read and counts only selected profile runtimes", () =>
+    Effect.gen(function* () {
+      reset()
+      const browser = pack(0)
+      const unusedRuntime = CapabilityManifest.Runtime.make({
+        id: CapabilityManifest.ID.make("unused-runtime"),
+        type: "mcp",
+        command: ["unused-runtime"],
+        tools: ["unused"],
+        optional: false,
+        timeoutMs: 15_000,
+      })
+      catalogPacks = [
+        {
+          ...browser,
+          runtimes: [...browser.runtimes, unusedRuntime],
+          profiles: {
+            ...browser.profiles,
+            [CapabilityManifest.ID.make("unused")]: {
+              description: "Unused profile",
+              skills: [],
+              runtimes: [unusedRuntime.id],
+            },
+          },
+        },
+      ]
+      yieldRegistry = yield* ToolRegistry.Service
+      const eventBus = yield* EventV2.Service
+      const observed: EventV2.Payload[] = []
+      const unsubscribe = yield* eventBus.listen((event) =>
+        Effect.sync(() => {
+          if (event.type === "capability.activation.requested") activationTrace.push("activation:requested")
+          if (event.type === "capability.startup.measured") observed.push(event)
+        }),
+      )
+
+      yield* call("capability_enable", { id: "browser", profile: "default" })
+      yield* unsubscribe
+
+      expect(activationTrace).toEqual(["activation:requested", "catalog:get"])
+      expect(catalogGetCalls).toBe(1)
+      expect(observed).toHaveLength(1)
+      expect(observed[0]?.data).toMatchObject({ runtimeCount: 1 })
     }),
   )
 

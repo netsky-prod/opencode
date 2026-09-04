@@ -1,8 +1,9 @@
 import { describe, expect } from "bun:test"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { EventV2 } from "@opencode-ai/core/event"
+import { CapabilityEvent } from "@opencode-ai/core/capability/event"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
-import { Deferred, Effect, Exit, Layer } from "effect"
+import { Deferred, Effect, Exit, Layer, Schema } from "effect"
 import { Session as SessionNs } from "@/session/session"
 import { MessageV2 } from "../../src/session/message-v2"
 import { MessageID, PartID, type SessionID } from "../../src/session/schema"
@@ -43,6 +44,47 @@ const awaitDeferred = <T>(deferred: Deferred.Deferred<T>, message: string) =>
   )
 
 const remove = (id: SessionID) => SessionNs.use.remove(id)
+
+const PrivateDurableBridgeEvent = EventV2.define({
+  type: "capability.test.private-durable-bridge",
+  durable: { version: 1, aggregate: "capabilityID" },
+  schema: { capabilityID: Schema.String },
+})
+
+describe("EventV2 bridge privacy", () => {
+  it.instance("preserves explicit capability location suppression", () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2Bridge.Service
+      const received = yield* Deferred.make<EventV2.Payload>()
+      const durableReceived = yield* Deferred.make<EventV2.Payload>()
+      const globalCapabilityEvents: unknown[] = []
+      const globalListener = (event: { payload: { type?: string } }) => {
+        if (event.payload.type?.startsWith("capability.")) globalCapabilityEvents.push(event)
+      }
+      GlobalBus.on("event", globalListener)
+      yield* Effect.addFinalizer(() => Effect.sync(() => GlobalBus.off("event", globalListener)))
+      const unsubscribe = yield* events.listen((event) => {
+        if (event.type === "capability.activation.requested") Deferred.doneUnsafe(received, Effect.succeed(event))
+        if (event.type === PrivateDurableBridgeEvent.type)
+          Deferred.doneUnsafe(durableReceived, Effect.succeed(event))
+        return Effect.void
+      })
+      yield* Effect.addFinalizer(() => unsubscribe)
+
+      yield* CapabilityEvent.publish(events, {
+        type: "capability.activation.requested",
+        capabilityID: "browser",
+      })
+      const event = yield* awaitDeferred(received, "timed out waiting for capability event")
+      yield* events.publish(PrivateDurableBridgeEvent, { capabilityID: "private-durable" }, { location: false })
+      const durableEvent = yield* awaitDeferred(durableReceived, "timed out waiting for private durable event")
+
+      expect(event).not.toHaveProperty("location")
+      expect(durableEvent).not.toHaveProperty("location")
+      expect(globalCapabilityEvents).toEqual([])
+    }),
+  )
+})
 
 describe("session.created event", () => {
   it.instance("should emit session.created event when session is created", () =>

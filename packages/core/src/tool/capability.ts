@@ -5,11 +5,13 @@ import { Clock, Effect, Exit, Layer, Result, Schema, Scope } from "effect"
 import { ChildProcess } from "effect/unstable/process"
 import { AgentV2 } from "../agent"
 import { CapabilityCatalog } from "../capability/catalog"
+import { CapabilityEvent } from "../capability/event"
 import { CapabilityManifest } from "../capability/manifest"
 import { CapabilityRuntime } from "../capability/runtime"
 import { CapabilityState } from "../capability/state"
 import { makeLocationNode } from "../effect/app-node"
 import { KeyedMutex } from "../effect/keyed-mutex"
+import { EventV2 } from "../event"
 import { AppProcess } from "../process"
 import { PermissionV2 } from "../permission"
 import { SessionSchema } from "../session/schema"
@@ -110,6 +112,7 @@ type SharedRegistration = {
 const layer = Layer.effectDiscard(
   Effect.gen(function* () {
     const catalog = yield* CapabilityCatalog.Service
+    const eventBus = yield* EventV2.Service
     const state = yield* CapabilityState.Service
     const runtime = yield* CapabilityRuntime.Service
     const process = yield* AppProcess.Service
@@ -544,8 +547,9 @@ const layer = Layer.effectDiscard(
             profiles: RequestedProfiles.pipe(Schema.optional),
           }),
           output: EnableOutput,
-          execute: (input, context) =>
-            authorize(context, "capability_enable", [input.id]).pipe(
+          execute: (input, context) => {
+            let runtimeCount = 0
+            const operation = authorize(context, "capability_enable", [input.id]).pipe(
               Effect.andThen(
                 locks.withLock(activationKey(context.sessionID, input.id))(
                   Effect.gen(function* () {
@@ -590,12 +594,19 @@ const layer = Layer.effectDiscard(
                       const missing = requested.find((profile) => !Object.hasOwn(pack.profiles, profile)) ?? "default"
                       return yield* new ToolFailure({ message: `Capability profile not found: ${input.id}/${missing}` })
                     }
+                    runtimeCount = selectedRuntimes(pack, profiles).length
                     const dependencies = compatible(pack, profiles) ? yield* probe(pack, profiles) : []
                     return yield* activateLocked(context.sessionID, pack, profiles, dependencies, true, context.agent)
                   }),
                 ),
               ),
-            ),
+            )
+            return CapabilityEvent.observeActivation(
+              eventBus,
+              { capabilityID: input.id, runtimeCount: () => runtimeCount },
+              operation,
+            )
+          },
         }),
         capability_disable: Tool.make({
           description: "Disable one capability pack for this session and release its runtime references.",
@@ -763,6 +774,7 @@ export const node = makeLocationNode({
     PermissionV2.node,
     AgentV2.node,
     SessionStore.node,
+    EventV2.node,
   ],
 })
 

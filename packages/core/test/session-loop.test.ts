@@ -5,6 +5,7 @@ import { Effect } from "effect"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Database } from "@opencode-ai/core/database/database"
+import { EventV2 } from "@opencode-ai/core/event"
 import { Project } from "@opencode-ai/core/project"
 import { ProjectTable } from "@opencode-ai/core/project/sql"
 import { AbsolutePath } from "@opencode-ai/core/schema"
@@ -14,7 +15,7 @@ import { SessionInputTable, SessionLoopTable, SessionTable } from "@opencode-ai/
 import { testEffect } from "./lib/effect"
 import { tmpdir } from "./fixture/tmpdir"
 
-const it = testEffect(AppNodeBuilder.build(LayerNode.group([Database.node, SessionLoop.node])))
+const it = testEffect(AppNodeBuilder.build(LayerNode.group([Database.node, EventV2.node, SessionLoop.node])))
 const sessionID = SessionV2.ID.make("ses_loop_test")
 const otherSessionID = SessionV2.ID.make("ses_loop_other")
 const missingSessionID = SessionV2.ID.make("ses_loop_missing")
@@ -43,6 +44,74 @@ const setup = Effect.gen(function* () {
 })
 
 describe("SessionLoop", () => {
+  it.effect("emits checkpoint counts and completion requests without checkpoint or session content", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const loops = yield* SessionLoop.Service
+      const events = yield* EventV2.Service
+      const observed: EventV2.Payload[] = []
+      const unsubscribe = yield* events.listen((event) =>
+        Effect.sync(() => {
+          if (event.type.startsWith("capability.loop.")) observed.push(event)
+        }),
+      )
+      const criterion = "private acceptance criterion"
+      const created = yield* loops.create({
+        sessionID,
+        prompt: "private loop prompt",
+        mode: "adaptive",
+        checkpoint: { objective: "private objective", acceptanceCriteria: [criterion], nextAction: "inspect" },
+        now: 1_000,
+      })
+      yield* loops.checkpoint({
+        sessionID,
+        id: created.id,
+        checkpoint: { observations: ["private observation"], artifacts: ["/private/artifact"] },
+        now: 2_000,
+      })
+      yield* loops
+        .checkpoint({
+          sessionID,
+          id: created.id,
+          checkpoint: {},
+          state: "completed",
+          reason: "unsupported completion",
+          now: 3_000,
+        })
+        .pipe(Effect.exit)
+      yield* loops.checkpoint({
+        sessionID,
+        id: created.id,
+        checkpoint: { verifiedFacts: [{ claim: criterion, evidence: ["artifact:public-ref"] }] },
+        state: "completed",
+        reason: "verified",
+        now: 4_000,
+      })
+      yield* unsubscribe
+
+      expect(observed.map((event) => event.type)).toEqual([
+        "capability.loop.checkpoint.updated",
+        "capability.loop.checkpoint.updated",
+        "capability.loop.completion.requested",
+        "capability.loop.completion.requested",
+        "capability.loop.checkpoint.updated",
+      ])
+      expect(observed.at(-1)?.data).toMatchObject({
+        loopID: created.id,
+        state: "completed",
+        factCount: 1,
+        evidenceCount: 1,
+        artifactCount: 1,
+        blockerCount: 0,
+      })
+      const serialized = JSON.stringify(observed)
+      expect(serialized).not.toContain(sessionID)
+      expect(serialized).not.toContain("private objective")
+      expect(serialized).not.toContain("private observation")
+      expect(serialized).not.toContain("/private/artifact")
+    }),
+  )
+
   it.effect("creates, owns, updates, lists, and removes durable loops", () =>
     Effect.gen(function* () {
       yield* setup

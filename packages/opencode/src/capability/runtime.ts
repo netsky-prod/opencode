@@ -3,6 +3,7 @@ export * as CapabilityRuntime from "./runtime"
 import { CapabilityManifest } from "@opencode-ai/core/capability/manifest"
 import { CapabilityRuntime as CoreCapabilityRuntime } from "@opencode-ai/core/capability/runtime"
 import { makeLocationNode } from "@opencode-ai/core/effect/app-node"
+import { EventV2 } from "@opencode-ai/core/event"
 import { ConfigMCPV1 } from "@opencode-ai/core/v1/config/mcp"
 import { Cause, Effect, Exit, Layer } from "effect"
 import { MCP } from "@/mcp"
@@ -20,6 +21,8 @@ const layer = Layer.effect(
   CoreCapabilityRuntime.Service,
   Effect.gen(function* () {
     const mcp = yield* MCP.Service
+    const events = yield* EventV2.Service
+    const makeObserved = (adapter: CoreCapabilityRuntime.Adapter) => CoreCapabilityRuntime.make(adapter, { events })
     const runtimes = yield* InstanceState.make(
       Effect.fn("CapabilityRuntime.state")(function* () {
         const bridge = yield* EffectBridge.make()
@@ -31,7 +34,7 @@ const layer = Layer.effect(
           }
         }
 
-        return yield* CoreCapabilityRuntime.make({
+        return yield* makeObserved({
           start: (key, definition) => {
             const server = serverName(key)
             let registration: MCP.Registration | undefined
@@ -133,7 +136,7 @@ const layer = Layer.effect(
 export const node = makeLocationNode({
   service: CoreCapabilityRuntime.Service,
   layer,
-  deps: [MCP.node],
+  deps: [MCP.node, EventV2.node],
 })
 
 export const adapterNode = node

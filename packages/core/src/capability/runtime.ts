@@ -4,6 +4,8 @@ import { Cause, Clock, Context, Effect, Exit, Fiber, Result, Scope, Schema } fro
 import { LayerNode } from "../effect/layer-node"
 import { Node } from "../effect/app-node"
 import { KeyedMutex } from "../effect/keyed-mutex"
+import type { EventV2 } from "../event"
+import { CapabilityEvent } from "./event"
 import { CapabilityManifest } from "./manifest"
 
 const IDLE_CLOSE = 30_000
@@ -107,7 +109,7 @@ type Entry = {
 
 export const make = (
   adapter: Adapter,
-  options: { readonly idleCloseMs?: number } = {},
+  options: { readonly idleCloseMs?: number; readonly events?: EventV2.Interface } = {},
 ): Effect.Effect<Interface, never, Scope.Scope> =>
   Effect.gen(function* () {
     const scope = yield* Effect.scope
@@ -151,6 +153,15 @@ export const make = (
               entry.resource = undefined
               entry.updatedAt = yield* Clock.currentTimeMillis
               entry.diagnostic = redact(exitDiagnostic(exit), entry.definition)
+              if (options.events) {
+                yield* CapabilityEvent.publish(options.events, {
+                  type: "capability.runtime.crashed",
+                  runtimeID: entry.definition.id,
+                  state: "failed",
+                  referenceCount: entry.references.size,
+                  diagnosticRef: "runtime-exited",
+                })
+              }
               yield* stop(resource, entry.definition)
               if (entry.references.size === 0) {
                 entry.state = "stopped"
@@ -180,6 +191,7 @@ export const make = (
           entry.state = "starting"
           entry.diagnostic = undefined
           entry.updatedAt = yield* Clock.currentTimeMillis
+          const startedAt = entry.updatedAt
           const timeout = entry.definition.timeoutMs ?? 15_000
           const attempt = yield* restore(
             boundedExit(adapter.start(key, entry.definition), timeout, (resource) =>
@@ -211,6 +223,15 @@ export const make = (
           entry.diagnostic = attempt.value.diagnostic ? redact(attempt.value.diagnostic, entry.definition) : undefined
           entry.generation++
           onStarted?.(attempt.value)
+          if (options.events) {
+            yield* CapabilityEvent.publish(options.events, {
+              type: "capability.runtime.started",
+              runtimeID: entry.definition.id,
+              state: entry.state,
+              durationMs: Math.max(0, entry.updatedAt - startedAt),
+              referenceCount: entry.references.size,
+            })
+          }
           yield* monitor(key, entry, attempt.value, entry.generation)
           return attempt.value
         }),
@@ -221,6 +242,7 @@ export const make = (
 
     const close = Effect.fnUntraced(function* (entry: Entry) {
       const resource = entry.resource
+      const startedAt = yield* Clock.currentTimeMillis
       entry.resource = undefined
       entry.close = undefined
       entry.state = "stopped"
@@ -229,6 +251,15 @@ export const make = (
       entry.generation++
       entry.updatedAt = yield* Clock.currentTimeMillis
       if (resource) yield* stop(resource, entry.definition)
+      if (resource && options.events) {
+        yield* CapabilityEvent.publish(options.events, {
+          type: "capability.runtime.stopped",
+          runtimeID: entry.definition.id,
+          state: "stopped",
+          durationMs: Math.max(0, (yield* Clock.currentTimeMillis) - startedAt),
+          referenceCount: entry.references.size,
+        })
+      }
     })
 
     const acquire = Effect.fn("CapabilityRuntime.acquire")(function* (
@@ -269,6 +300,7 @@ export const make = (
             entry.close = undefined
           }
 
+          const reused = entry.resource !== undefined
           const resource =
             entry.resource ??
             (entry.state === "degraded" && entry.definition.optional
@@ -281,6 +313,14 @@ export const make = (
           }
 
           if (!claimed) claimed = yield* Effect.sync(() => claim(key, entry)).pipe(Effect.uninterruptible)
+          if (reused && options.events) {
+            yield* CapabilityEvent.publish(options.events, {
+              type: "capability.runtime.reused",
+              runtimeID: entry.definition.id,
+              state: entry.state === "degraded" ? "degraded" : "healthy",
+              referenceCount: entry.references.size,
+            })
+          }
           return claimed
         }),
       )

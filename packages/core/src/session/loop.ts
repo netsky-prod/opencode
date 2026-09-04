@@ -3,7 +3,9 @@ export * as SessionLoop from "./loop"
 import { and, asc, eq, isNull, lte, or, sql } from "drizzle-orm"
 import { Context, DateTime, Effect, Layer, Schema } from "effect"
 import { Database } from "../database/database"
+import { CapabilityEvent } from "../capability/event"
 import { makeGlobalNode } from "../effect/app-node"
+import { EventV2 } from "../event"
 import { KeyedMutex } from "../effect/keyed-mutex"
 import { Identifier } from "../id/id"
 import { SessionInput } from "./input"
@@ -399,7 +401,22 @@ const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const { db } = yield* Database.Service
+    const events = yield* EventV2.Service
     const locks = KeyedMutex.makeUnsafe<ID>()
+
+    const publishCheckpoint = (loop: Info) => {
+      const checkpoint = loop.checkpoint
+      if (!checkpoint) return Effect.void
+      return CapabilityEvent.publish(events, {
+        type: "capability.loop.checkpoint.updated",
+        loopID: loop.id,
+        state: loop.state,
+        factCount: checkpoint.verifiedFacts.length,
+        evidenceCount: checkpoint.verifiedFacts.reduce((count, fact) => count + (fact.evidence?.length ?? 0), 0),
+        artifactCount: checkpoint.artifacts.length,
+        blockerCount: checkpoint.blockers.length,
+      })
+    }
 
     const owned = Effect.fn("SessionLoop.owned")(function* (input: OwnedInput) {
       const row = yield* db
@@ -452,7 +469,9 @@ const layer = Layer.effect(
         .returning()
         .get()
         .pipe(Effect.orDie)
-      return fromRow(row)
+      const result = fromRow(row)
+      if (checkpoint) yield* publishCheckpoint(result)
+      return result
     })
 
     const get = Effect.fn("SessionLoop.get")(function* (input: OwnedInput) {
@@ -477,6 +496,13 @@ const layer = Layer.effect(
     const updateUnlocked = Effect.fn("SessionLoop.update")(function* (input: UpdateInput) {
       const currentRow = yield* owned(input)
       const current = fromRow(currentRow)
+      if (input.state === "completed") {
+        yield* CapabilityEvent.publish(events, {
+          type: "capability.loop.completion.requested",
+          loopID: input.id,
+          state: "completed",
+        })
+      }
       yield* Effect.yieldNow
       const timestamp = yield* now(input.now)
       const prompt = input.prompt === undefined ? current.prompt : yield* normalizePrompt(input.prompt)
@@ -546,7 +572,9 @@ const layer = Layer.effect(
         .get()
         .pipe(Effect.orDie)
       if (!row) return yield* Effect.fail(new NotFound({ sessionID: input.sessionID, id: input.id }))
-      return fromRow(row)
+      const result = fromRow(row)
+      if (input.checkpoint !== undefined) yield* publishCheckpoint(result)
+      return result
     })
 
     const update = (input: UpdateInput) => locks.withLock(input.id)(updateUnlocked(input))
@@ -763,4 +791,4 @@ const layer = Layer.effect(
   }),
 )
 
-export const node = makeGlobalNode({ service: Service, layer, deps: [Database.node] })
+export const node = makeGlobalNode({ service: Service, layer, deps: [Database.node, EventV2.node] })

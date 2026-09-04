@@ -1,15 +1,26 @@
 import { afterEach, describe, expect } from "bun:test"
-import { Effect, Layer, Queue, Schema, Stream } from "effect"
+import { Effect, Queue, Schema, Stream } from "effect"
 import { EventPaths } from "../../src/server/routes/instance/httpapi/groups/event"
+import { CapabilityEvent } from "@opencode-ai/core/capability/event"
+import { EventV2 } from "@opencode-ai/core/event"
+import { EventV2Bridge } from "@/event-v2-bridge"
+import { AppRuntime } from "@/effect/app-runtime"
+import { InstanceStore } from "@/project/instance-store"
 import { resetDatabase } from "../fixture/db"
 import { disposeAllInstances, TestInstance } from "../fixture/fixture"
-import { testEffect } from "../lib/effect"
+import { testEffectShared } from "../lib/effect"
 import { httpApiLayer, requestInDirectory } from "./httpapi-layer"
 
 const EventData = Schema.Struct({
   id: Schema.optional(Schema.String),
   type: Schema.String,
   properties: Schema.Record(Schema.String, Schema.Any),
+})
+
+const PrivateDurableSseEvent = EventV2.define({
+  type: "capability.test.private-durable-sse",
+  durable: { version: 1, aggregate: "capabilityID" },
+  schema: { capabilityID: Schema.String },
 })
 
 const readEvent = (reader: Queue.Dequeue<Uint8Array>) =>
@@ -39,7 +50,7 @@ afterEach(async () => {
   await resetDatabase()
 })
 
-const it = testEffect(httpApiLayer)
+const it = testEffectShared(httpApiLayer)
 
 describe("event HttpApi", () => {
   it.instance(
@@ -88,6 +99,64 @@ describe("event HttpApi", () => {
         const created = yield* requestInDirectory("/session", directory, { method: "POST" })
         expect(created.status).toBe(200)
         expect(yield* readEvent(reader)).toMatchObject({ type: "session.created" })
+      }),
+    { git: true, config: { formatter: false, lsp: false } },
+  )
+
+  it.instance(
+    "routes private capability events to the instance stream without exposing location",
+    () =>
+      Effect.gen(function* () {
+        const { directory } = yield* TestInstance
+        const { reader } = yield* openEventStream(directory)
+        expect(yield* readEvent(reader)).toMatchObject({ type: "server.connected" })
+
+        yield* Effect.promise(() =>
+          AppRuntime.runPromise(
+            InstanceStore.Service.use((store) =>
+              store.provide(
+                { directory },
+                EventV2Bridge.Service.use((events) =>
+                  CapabilityEvent.publish(events, {
+                    type: "capability.activation.requested",
+                    capabilityID: "browser",
+                  }),
+                ),
+              ),
+            ),
+          ),
+        )
+        const event = yield* readEvent(reader)
+
+        expect(event).toEqual({
+          id: expect.any(String),
+          type: "capability.activation.requested",
+          properties: { capabilityID: "browser" },
+        })
+        expect(JSON.stringify(event)).not.toContain(directory)
+
+        yield* Effect.promise(() =>
+          AppRuntime.runPromise(
+            InstanceStore.Service.use((store) =>
+              store.provide(
+                { directory },
+                EventV2Bridge.Service.use((events) =>
+                  events.publish(
+                    PrivateDurableSseEvent,
+                    { capabilityID: "private-durable" },
+                    { location: false },
+                  ),
+                ),
+              ),
+            ),
+          ),
+        )
+        const durableEvent = yield* readEvent(reader)
+        expect(durableEvent).toMatchObject({
+          type: PrivateDurableSseEvent.type,
+          properties: { capabilityID: "private-durable" },
+        })
+        expect(JSON.stringify(durableEvent)).not.toContain(directory)
       }),
     { git: true, config: { formatter: false, lsp: false } },
   )

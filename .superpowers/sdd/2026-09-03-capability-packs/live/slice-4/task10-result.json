@@ -1,0 +1,54 @@
+{
+  "status": "passed",
+  "runner": "screen",
+  "model": "runpod-qwen/qwen3.8-27b",
+  "toolOrder": [
+    "capability_search",
+    "capability_status",
+    "capability_enable",
+    "tiny-fixture_echo_ping",
+    "capability_disable"
+  ],
+  "eventOrder": [
+    "capability.schema.estimated",
+    "capability.schema.estimated",
+    "capability.schema.estimated",
+    "capability.activation.requested",
+    "capability.runtime.started",
+    "capability.startup.measured",
+    "capability.activation.succeeded",
+    "capability.definitions.added",
+    "capability.schema.estimated",
+    "capability.schema.estimated",
+    "capability.definitions.removed",
+    "capability.schema.estimated",
+    "capability.runtime.stopped"
+  ],
+  "eventCounts": {
+    "capability.schema.estimated": 6,
+    "capability.activation.requested": 1,
+    "capability.runtime.started": 1,
+    "capability.startup.measured": 1,
+    "capability.activation.succeeded": 1,
+    "capability.definitions.added": 1,
+    "capability.definitions.removed": 1,
+    "capability.runtime.stopped": 1
+  },
+  "schemaEstimate": {
+    "baselineBytes": 18051,
+    "activatedBytes": 18264,
+    "deltaBytes": 213,
+    "baselineTokens": 4513,
+    "activatedTokens": 4566,
+    "deltaTokens": 53
+  },
+  "checks": {
+    "allToolsCompleted": true,
+    "actualEventEnvelopesCaptured": true,
+    "noLocationOrMetadata": true,
+    "noSecretsHostsPathsSessionsOrRawInputs": true,
+    "noGoalToolUse": true,
+    "noLoopToolUse": true,
+    "runtimeCleanup": true
+  }
+}
