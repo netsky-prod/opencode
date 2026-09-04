@@ -349,6 +349,7 @@ function capabilityFixturePath(directory: string, closeMarker?: string, startMar
         npx,
         [
           `#!${process.execPath}`,
+          'if (JSON.stringify(process.argv.slice(2)) === JSON.stringify(["--version"])) { console.log("12.0.2"); process.exit(0) }',
           'if (JSON.stringify(process.argv.slice(2)) !== JSON.stringify(["-y", "@playwright/mcp@0.0.80", "--browser", "chromium", "--headless", "--isolated"])) process.exit(64)',
           `await import(${JSON.stringify(fixture)})`,
         ].join("\n"),

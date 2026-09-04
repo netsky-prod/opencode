@@ -24,13 +24,15 @@ The installer downloads published release assets, not the latest `dev` source. T
 ```bash
 bun install --frozen-lockfile
 cd packages/opencode
-bun run build --single --skip-install
+OPENCODE_CHANNEL=local bun run build --single --skip-install
 ./dist/opencode-darwin-arm64/bin/opencode --version
 ```
 
 Choose the matching `dist/opencode-<os>-<arch>` directory on other hosts. The normal build embeds the Web UI; `--skip-embed-web-ui` is suitable only for a CLI-only development build. Preserve your previous installed binary before copying a tested build over it. Configuration and databases are not part of the archive and must not be overwritten during installation.
 
-Built-in capability JSON/Markdown is embedded by Bun's static imports. Do not add installation steps that copy these assets from a developer checkout. External pack dependencies (browsers, Node, Xcode, Flutter, scanners, GitHub CLI, Docker) are not embedded. See [capability setup and migration](./capabilities.md).
+The `local` channel avoids requesting an unpublished fork-version plugin package from npm. Use an explicit version/channel only for a release whose plugin dependency strategy has been verified.
+
+Built-in capability JSON/Markdown is embedded by Bun's static imports. Do not add installation steps that copy these assets from a developer checkout. External pack dependencies (browsers, Node/npm/npx, Xcode, Flutter, scanners, GitHub CLI, Docker) are not embedded. See [capability setup and migration](./capabilities.md).
 
 Before a capability release, run `bun test test/capability/distribution.test.ts test/capability/e2e.test.ts` and a real-model acceptance run, in addition to the normal package tests and typechecks. The SDK generator's required-body patch is a committed Bun dependency patch and must survive `bun install --frozen-lockfile`.
 

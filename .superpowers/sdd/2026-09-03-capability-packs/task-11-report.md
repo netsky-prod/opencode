@@ -69,3 +69,11 @@ The reviewer accepted the external verifiers, actual schema gate, settings and p
 The first committed-code multi-case run was stopped after the browser baseline made 221 invalid task calls using the literal agent name `...`. This is recorded as an invalid/incomplete evaluation, not accepted or deadline-failed evidence. Both arms now receive the same explicit instruction to report BLOCKED when capability discovery is absent. Cleanup of the owned runner/CLI/screen was confirmed. The rerun is pending.
 
 Focused tests: 23 passed, 117 assertions. This includes actual Chromium rendering, iOS Simulator compilation, checkpoint database existence/state, raw directory ignore regression, opaque diagnostics, alternative profiles, and process cleanup. Typecheck and scoped lint verification follow in the final result.
+
+## Final corrected evaluator evidence
+
+`5d9ce44` adds the exact submitted-prompt digest and parses structured activation outcomes. A completed transport carrying `state: failed` is a failure, and recovery requires retrying the original failed profile. The real failed-default → repair → active-default sequence is covered. All 24 focused eval tests and typecheck passed.
+
+The five-case run at `9c960b1` exited 0: baseline 20%, candidate 80%, exactly four added management schemas. Its recovery score was a confirmed evaluator false negative; the original output is preserved, not silently changed.
+
+A fresh committed-code proof/recovery comparison at clean `d15cd7f` exited 0 and passed the gate: baseline 0/2 complete versus candidate 2/2 complete, 3/3 externally verified criteria in both candidate cases, exactly four default management schemas. Both arms have matching effective prompt digests for each case. Recovery records two incorrect calls (including the expected initial failure); this is not a zero-error claim. This is a small integration fixture suite, not evidence of general model superiority or a production success rate. The serving commit remains unavailable and is explicitly recorded. Sanitized metrics are in `live/final/result.json`; raw traces remain ignored.

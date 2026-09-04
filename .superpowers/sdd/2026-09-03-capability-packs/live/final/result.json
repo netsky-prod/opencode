@@ -1,0 +1,64 @@
+{
+  "status": "native-acceptance-pending",
+  "task11": {
+    "suiteVersion": 1,
+    "metadata": {
+      "modelID": "runpod-qwen/qwen3.8-27b",
+      "quantization": "UD-IQ2_XXS",
+      "serverCommit": "unavailable",
+      "serverCommitProbe": "inspected x-server-commit and x-build-commit response headers",
+      "openCodeCommit": "d15cd7fd2e5c3db1b0bff86b2b57488d1344aae0",
+      "sourceDigest": "761eaca28ef16c456868c9fde04ed77fe479a0f2a8d23042e3693476372bca0c",
+      "dirty": false,
+      "seedStatus": "not requested",
+      "contextStatus": "applied to client model context limit; server capacity not independently verified",
+      "seed": null,
+      "settings": {
+        "temperature": 0,
+        "reasoning": true,
+        "contextTokens": 262144
+      }
+    },
+    "defaultCapabilityTools": 4,
+    "baseline": [
+      {
+        "caseID": "missing-capability-recognition",
+        "promptDigest": "13f1f13635277fbb1e7c79c24d5346c721cb27ae17cf3be4d8d20a4b033d4cd7",
+        "completed": false,
+        "verifiedCriteria": 1,
+        "totalCriteria": 3,
+        "incorrectToolCalls": 0,
+        "wallTimeMs": 218141
+      },
+      {
+        "caseID": "missing-dependency-recovery",
+        "promptDigest": "d13d7bf2653b350b2f0fe0ec5ab9ae4a7b3535a24faf5dde818157e9573360f3",
+        "completed": false,
+        "verifiedCriteria": 0,
+        "totalCriteria": 3,
+        "incorrectToolCalls": 0,
+        "wallTimeMs": 255507
+      }
+    ],
+    "candidate": [
+      {
+        "caseID": "missing-capability-recognition",
+        "promptDigest": "13f1f13635277fbb1e7c79c24d5346c721cb27ae17cf3be4d8d20a4b033d4cd7",
+        "completed": true,
+        "verifiedCriteria": 3,
+        "totalCriteria": 3,
+        "incorrectToolCalls": 0,
+        "wallTimeMs": 45849
+      },
+      {
+        "caseID": "missing-dependency-recovery",
+        "promptDigest": "d13d7bf2653b350b2f0fe0ec5ab9ae4a7b3535a24faf5dde818157e9573360f3",
+        "completed": true,
+        "verifiedCriteria": 3,
+        "totalCriteria": 3,
+        "incorrectToolCalls": 2,
+        "wallTimeMs": 250071
+      }
+    ]
+  }
+}
