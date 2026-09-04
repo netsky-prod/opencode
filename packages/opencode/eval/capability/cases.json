@@ -54,14 +54,29 @@
       "description": "Use the browser pack to verify a local UI outcome and retain screenshot evidence.",
       "prompt": "Inspect the local fixture UI, verify the success state, and preserve screenshot evidence.",
       "coverage": ["browser"],
-      "fixture": "empty",
+      "fixture": "outcome-capability",
       "requiredCapabilities": ["browser"],
       "expectedProfiles": { "browser": ["default"] },
       "criteria": [
         {
           "id": "browser-evidence",
           "description": "A verified browser artifact exists.",
+          "verifier": {
+            "type": "binary-artifact",
+            "path": ".eval/evidence/browser.png",
+            "prefix": "iVBORw0KGgo=",
+            "minimumBytes": 1000
+          }
+        },
+        {
+          "id": "browser-activation",
+          "description": "The browser profile was activated.",
           "verifier": { "type": "activation", "capability": "browser", "profiles": ["default"] }
+        },
+        {
+          "id": "browser-tool",
+          "description": "The browser outcome tool completed.",
+          "verifier": { "type": "tool", "name": "browser_fixture_verify_outcome", "status": "completed" }
         }
       ]
     },
@@ -71,14 +86,28 @@
       "description": "Retrieve and cite a primary source while exposing raw prefill cost separately.",
       "prompt": "Find the requested primary source, verify the relevant fact, and save a citation-backed result.",
       "coverage": ["research"],
-      "fixture": "empty",
+      "fixture": "outcome-capability",
       "requiredCapabilities": ["research"],
       "expectedProfiles": { "research": ["default"] },
       "criteria": [
         {
           "id": "research-source",
           "description": "A primary-source result was externally verified.",
+          "verifier": {
+            "type": "artifact",
+            "path": ".eval/evidence/research.json",
+            "contains": "{\"fact\":\"Capability evals require external evidence.\",\"source\":\"primary-source.txt#L1\"}\n"
+          }
+        },
+        {
+          "id": "research-activation",
+          "description": "The research profile was activated.",
           "verifier": { "type": "activation", "capability": "research", "profiles": ["default"] }
+        },
+        {
+          "id": "research-tool",
+          "description": "The research outcome tool completed.",
+          "verifier": { "type": "tool", "name": "research_fixture_verify_outcome", "status": "completed" }
         }
       ]
     },
@@ -88,14 +117,38 @@
       "description": "Select only the platform profile required by a mobile fixture.",
       "prompt": "Inspect the iOS fixture and record simulator/build evidence using only the necessary platform profile.",
       "coverage": ["mobile", "smallest-profile-selection"],
-      "fixture": "empty",
+      "fixture": "outcome-capability",
       "requiredCapabilities": ["mobile"],
       "expectedProfiles": { "mobile": ["ios"] },
       "criteria": [
         {
           "id": "mobile-evidence",
           "description": "Mobile environment evidence was recorded.",
+          "verifier": {
+            "type": "artifact",
+            "path": ".eval/evidence/mobile-build.json",
+            "contains": "{\"build\":\"passed\",\"bundle\":\"com.example.eval\"}\n"
+          }
+        },
+        {
+          "id": "mobile-object",
+          "description": "Swift compiler produced a Mach-O object for iOS Simulator.",
+          "verifier": {
+            "type": "binary-artifact",
+            "path": ".eval/evidence/mobile.o",
+            "prefix": "z/rt/g==",
+            "minimumBytes": 1000
+          }
+        },
+        {
+          "id": "mobile-activation",
+          "description": "Only the iOS profile was activated.",
           "verifier": { "type": "activation", "capability": "mobile", "profiles": ["ios"] }
+        },
+        {
+          "id": "mobile-tool",
+          "description": "The mobile outcome tool completed.",
+          "verifier": { "type": "tool", "name": "mobile_fixture_verify_outcome", "status": "completed" }
         }
       ]
     },
@@ -105,14 +158,28 @@
       "description": "Detect a seeded security finding without unrelated capability activation.",
       "prompt": "Inspect the fixture for the seeded security issue and preserve machine-verifiable evidence.",
       "coverage": ["security", "unnecessary-activation"],
-      "fixture": "empty",
+      "fixture": "outcome-capability",
       "requiredCapabilities": ["security"],
       "expectedProfiles": { "security": ["static"] },
       "criteria": [
         {
           "id": "security-finding",
           "description": "The seeded finding was externally verified.",
+          "verifier": {
+            "type": "artifact",
+            "path": ".eval/evidence/security.json",
+            "contains": "{\"finding\":\"EVAL-SECRET-001\",\"line\":1}\n"
+          }
+        },
+        {
+          "id": "security-activation",
+          "description": "The static security profile was activated.",
           "verifier": { "type": "activation", "capability": "security", "profiles": ["static"] }
+        },
+        {
+          "id": "security-tool",
+          "description": "The security outcome tool completed.",
+          "verifier": { "type": "tool", "name": "security_fixture_verify_outcome", "status": "completed" }
         }
       ]
     },
@@ -122,14 +189,28 @@
       "description": "Extract a known fact from a document and preserve bounded artifact evidence.",
       "prompt": "Extract and verify the requested document fact, preserving the full extraction as an artifact.",
       "coverage": ["documents"],
-      "fixture": "empty",
+      "fixture": "outcome-capability",
       "requiredCapabilities": ["documents"],
       "expectedProfiles": { "documents": ["default"] },
       "criteria": [
         {
           "id": "document-fact",
           "description": "The extracted fact and artifact were externally verified.",
+          "verifier": {
+            "type": "artifact",
+            "path": ".eval/evidence/documents.json",
+            "contains": "{\"fact\":\"The verification code is DOC-742.\"}\n"
+          }
+        },
+        {
+          "id": "documents-activation",
+          "description": "The documents profile was activated.",
           "verifier": { "type": "activation", "capability": "documents", "profiles": ["default"] }
+        },
+        {
+          "id": "documents-tool",
+          "description": "The document outcome tool completed.",
+          "verifier": { "type": "tool", "name": "documents_fixture_verify_outcome", "status": "completed" }
         }
       ]
     },
@@ -139,14 +220,33 @@
       "description": "Inspect a fixture repository read-only and verify its unchanged state.",
       "prompt": "Answer the repository question using read-only GitHub/repository inspection and leave the fixture unchanged.",
       "coverage": ["github"],
-      "fixture": "empty",
+      "fixture": "outcome-capability",
       "requiredCapabilities": ["github"],
       "expectedProfiles": { "github": ["default"] },
       "criteria": [
         {
           "id": "github-readonly",
           "description": "Repository answer is correct and the tree remains unchanged.",
+          "verifier": {
+            "type": "artifact",
+            "path": ".git/eval-evidence/github.json",
+            "contains": "{\"subject\":\"Initial fixture commit\"}\n"
+          }
+        },
+        {
+          "id": "github-clean",
+          "description": "The Git fixture remains unchanged.",
+          "verifier": { "type": "git-clean" }
+        },
+        {
+          "id": "github-activation",
+          "description": "The GitHub profile was activated.",
           "verifier": { "type": "activation", "capability": "github", "profiles": ["default"] }
+        },
+        {
+          "id": "github-tool",
+          "description": "The GitHub outcome tool completed.",
+          "verifier": { "type": "tool", "name": "github_fixture_verify_outcome", "status": "completed" }
         }
       ]
     },
@@ -156,14 +256,29 @@
       "description": "Build and health-check a disposable local service with externally checked cleanup.",
       "prompt": "Build the fixture service, verify its health response, then clean up every owned resource.",
       "coverage": ["deploy"],
-      "fixture": "empty",
+      "fixture": "outcome-capability",
       "requiredCapabilities": ["deploy"],
       "expectedProfiles": { "deploy": ["core"] },
       "criteria": [
         {
           "id": "deploy-health",
           "description": "Health and cleanup checks both pass.",
+          "verifier": { "type": "artifact", "path": ".eval/evidence/deploy-health.txt", "contains": "ok\n" }
+        },
+        {
+          "id": "deploy-cleanup",
+          "description": "The verified health endpoint is no longer listening.",
+          "verifier": { "type": "port-closed", "path": ".eval/evidence/deploy-port.txt" }
+        },
+        {
+          "id": "deploy-activation",
+          "description": "The deploy core profile was activated.",
           "verifier": { "type": "activation", "capability": "deploy", "profiles": ["core"] }
+        },
+        {
+          "id": "deploy-tool",
+          "description": "The deploy outcome tool completed.",
+          "verifier": { "type": "tool", "name": "deploy_fixture_verify_outcome", "status": "completed" }
         }
       ]
     },
@@ -171,15 +286,15 @@
       "id": "checkpoint-evidence",
       "version": 1,
       "description": "Update a durable loop checkpoint with evidence instead of an unsupported claim.",
-      "prompt": "Persist a checkpoint containing the verified fact, its evidence reference, and the next action.",
+      "prompt": "Read checkpoint-evidence.txt. Create an adaptive loop to preserve the verified fact; update it using loop_checkpoint with that exact fact, evidence reference checkpoint-evidence.txt, artifacts [checkpoint-evidence.txt], and a concrete nextAction. Mark it completed with a reason through loop_checkpoint and confirm using loop_list. Retain the completed record for external database verification.",
       "coverage": ["checkpoint-evidence"],
-      "fixture": "empty",
+      "fixture": "checkpoint",
       "requiredCapabilities": [],
       "criteria": [
         {
           "id": "checkpoint-event",
           "description": "A checkpoint update event records non-zero evidence.",
-          "verifier": { "type": "event", "event": "capability.loop.checkpoint.updated" }
+          "verifier": { "type": "checkpoint-evidence" }
         }
       ]
     },
@@ -189,14 +304,32 @@
       "description": "Recover after a missing dependency by following remediation and retrying the smallest profile.",
       "prompt": "Use capability status to diagnose the missing fixture dependency, apply the supplied local remediation, and retry successfully.",
       "coverage": ["missing-dependency-recovery"],
-      "fixture": "empty",
-      "requiredCapabilities": ["security"],
-      "expectedProfiles": { "security": ["static"] },
+      "fixture": "outcome-capability",
+      "requiredCapabilities": ["dependency-recovery"],
+      "expectedProfiles": { "dependency-recovery": ["default"] },
       "criteria": [
         {
           "id": "dependency-recovered",
           "description": "A failed dependency check is followed by successful activation evidence.",
-          "verifier": { "type": "activation", "capability": "security", "profiles": ["static"] }
+          "verifier": { "type": "dependency-recovery", "capability": "dependency-recovery" }
+        },
+        {
+          "id": "dependency-artifact",
+          "description": "The recovered runtime produced externally verified evidence.",
+          "verifier": {
+            "type": "artifact",
+            "path": ".eval/evidence/dependency-recovery.json",
+            "contains": "{\"dependency\":\"available\",\"retry\":\"passed\"}\n"
+          }
+        },
+        {
+          "id": "dependency-tool",
+          "description": "The recovered dependency outcome tool completed.",
+          "verifier": {
+            "type": "tool",
+            "name": "dependency-recovery_fixture_verify_outcome",
+            "status": "completed"
+          }
         }
       ]
     }

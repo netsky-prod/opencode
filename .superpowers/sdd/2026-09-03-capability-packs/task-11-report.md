@@ -4,7 +4,7 @@
 
 Implemented the versioned capability evaluation runner, externally verified scoring, deterministic JSON/Markdown reports, strict four-schema acceptance gate, privacy redaction, owned-process cleanup, and a real Qwen baseline/candidate gate through the actual OpenCode CLI/provider path.
 
-No Task 12 files were changed. No commit was created; coordinator review is pending.
+Initial implementation was committed as `15e5e0d`. Review rejected nominal outcome cases and gaps in schema gating, privacy, and provenance. The following initial evidence is historical; the fix-round section below supersedes it. Task 12 remains pending.
 
 ## TDD evidence
 
@@ -52,3 +52,12 @@ No `screen` socket, eval runner, OpenCode child, or proof MCP descendant remaine
 ## Known metadata limitation
 
 The live serving stack did not expose a server commit. The runner supports `QWEN_EVAL_SERVER_COMMIT`; the sanitized live result records that this infrastructure-supplied field was unavailable rather than inventing a revision. Model ID, quantization, OpenCode commit, suite/case versions, seed support, and settings are recorded.
+
+## Review fix round 1
+
+- Replaced activation-only cases with deterministic input fixtures and external artifact/state checks. Browser runs actual Chromium and captures a 640×480 screenshot; mobile runs swiftc against the iOS Simulator SDK and verifies its Mach-O object. The initial worker's static 1×1 PNG and claimed build JSON were rejected and replaced. These are runtime integration fixtures; no claim of general research or coding quality is made.
+- Schema accounting retains the first and last complete provider-visible tool snapshots. The gate checks baseline tool names against a closed built-in list, and candidate names must equal baseline plus exactly the four management tools. Extra inactive tools cannot be filtered away.
+- Requested temperature/context are applied; optional seed is sent at the forwarding boundary. Reports distinguish client context from unverified server capacity, capture source digest/dirty state, and inspect response headers for server revision. No prompts or bodies are retained in schema snapshots.
+- Raw-output destinations must be Git-ignored and not symlinked. Errors are redacted. Structured suite/trace parsing and typed redaction remove unsafe assertions. Scoped lint is clean.
+- Missing --case values fail. Each case uses its own SQLite file. Checkpoints require actual completed database records with the known fact and source artifact; deleting the database fails the regression.
+- Real Qwen re-evaluation from the committed fix is pending. The old result does not establish acceptance of this revision.

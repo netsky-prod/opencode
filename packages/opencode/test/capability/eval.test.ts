@@ -1,8 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test"
+import assert from "node:assert/strict"
+import { Database } from "bun:sqlite"
 import fs from "fs/promises"
 import os from "os"
 import path from "path"
 import { loadSuite, redact, scoreCase, scoreComparison } from "../../eval/capability/score"
+import { runFixtureOutcome } from "../../eval/capability/fixture/outcome"
 import {
   buildEvaluationConfig,
   parseArguments,
@@ -10,6 +13,9 @@ import {
   readTraceEvidence,
   runOwnedProcess,
   summarizeProviderSchemas,
+  schemaBudget,
+  validateRawOutput,
+  verifyCriterion,
   writeReports,
 } from "../../eval/capability/run"
 
@@ -102,6 +108,21 @@ describe("capability Qwen evaluation scorer", () => {
 })
 
 describe("capability Qwen evaluation runner", () => {
+  test("rejects missing case values and unsafe raw output locations", async () => {
+    expect(() => parseArguments(["--case"])).toThrow("requires a value")
+    expect(() => parseArguments(["--case", "--candidate"])).toThrow("requires a value")
+    await assert.rejects(validateRawOutput(path.join(import.meta.dir, "raw")), /ignored/)
+  })
+
+  test("checks actual schema names and rejects leaked inactive tools in either arm", () => {
+    const baseline = ["read", "glob"]
+    const candidate = [...baseline, "capability_search", "capability_enable", "capability_disable", "capability_status"]
+    expect(schemaBudget(baseline, candidate)).toBe(true)
+    expect(schemaBudget(baseline, [...candidate, "browser_navigate"])).toBe(false)
+    expect(schemaBudget([...baseline, "browser_navigate"], [...candidate, "browser_navigate"])).toBe(false)
+    expect(schemaBudget(baseline, candidate.slice(1))).toBe(false)
+    expect(schemaBudget([], [])).toBe(false)
+  })
   test("measures only provider-visible capability schemas after skipping non-task requests", () => {
     const fn = (name: string) => ({
       type: "function",
@@ -130,11 +151,25 @@ describe("capability Qwen evaluation runner", () => {
       },
     ]
 
-    const comparison = summarizeProviderSchemas(snapshots, ["eval-proof"])
+    const summary = summarizeProviderSchemas(snapshots)
 
-    expect(comparison.baselineBytes).toBeGreaterThan(2)
-    expect(comparison.activatedBytes).toBeGreaterThan(comparison.baselineBytes)
-    expect(comparison.deltaBytes).toBe(comparison.activatedBytes - comparison.baselineBytes)
+    expect(summary.initialToolNames).toEqual([
+      "capability_disable",
+      "capability_enable",
+      "capability_search",
+      "capability_status",
+      "read",
+    ])
+    expect(summary.finalToolNames).toEqual([
+      "capability_disable",
+      "capability_enable",
+      "capability_search",
+      "capability_status",
+      "eval-proof_writer_write_proof",
+      "read",
+    ])
+    expect(summary.comparison.activatedBytes).toBeGreaterThan(summary.comparison.baselineBytes)
+    expect(summary.comparison.deltaBytes).toBe(summary.comparison.activatedBytes - summary.comparison.baselineBytes)
   })
 
   test("preserves allowlisted capability event names while redacting actual hostnames", () => {
@@ -175,6 +210,197 @@ describe("capability Qwen evaluation runner", () => {
     expect(
       JSON.parse(await Bun.file(path.join(import.meta.dir, "../../package.json")).text()).scripts["eval:capability"],
     ).toBe("bun run eval/capability/run.ts")
+  })
+
+  test("requires deterministic external outcomes instead of activation aliases for every category case", async () => {
+    const suite = await loadSuite(path.join(import.meta.dir, "../../eval/capability/cases.json"))
+    const categoryCases = [
+      "browser",
+      "research",
+      "mobile",
+      "security",
+      "documents",
+      "github",
+      "deploy",
+      "checkpoint-evidence",
+      "missing-dependency-recovery",
+    ]
+    const outcomeVerifiers = new Set([
+      "artifact",
+      "binary-artifact",
+      "git-clean",
+      "port-closed",
+      "dependency-recovery",
+      "checkpoint-evidence",
+    ])
+
+    for (const id of categoryCases) {
+      const definition = suite.cases.find((item) => item.id === id)
+      expect(definition, id).toBeDefined()
+      expect(definition?.fixture, `${id} fixture`).not.toBe("empty")
+      expect(
+        definition?.criteria.some((criterion) => criterion.verifier && outcomeVerifiers.has(criterion.verifier.type)),
+        `${id} external outcome`,
+      ).toBe(true)
+      if (id !== "checkpoint-evidence") {
+        const capability = definition?.requiredCapabilities?.[0]
+        expect(
+          definition?.criteria.some(
+            (criterion) =>
+              criterion.verifier?.type === "tool" &&
+              criterion.verifier.name === `${capability}_fixture_verify_outcome` &&
+              criterion.verifier.status === "completed",
+          ),
+          `${id} completed outcome tool`,
+        ).toBe(true)
+      }
+    }
+  })
+
+  test("produces real deterministic evidence for every category fixture", async () => {
+    const suite = await loadSuite(path.join(import.meta.dir, "../../eval/capability/cases.json"))
+    const expected = {
+      browser: [".eval/evidence/browser.png", "89504e470d0a1a0a"],
+      research: [".eval/evidence/research.json", "primary-source.txt#L1"],
+      mobile: [".eval/evidence/mobile-build.json", "com.example.eval"],
+      security: [".eval/evidence/security.json", "EVAL-SECRET-001"],
+      documents: [".eval/evidence/documents.json", "DOC-742"],
+      github: [".git/eval-evidence/github.json", "Initial fixture commit"],
+      deploy: [".eval/evidence/deploy-health.txt", "ok"],
+    } as const
+
+    for (const [id, [evidence, contains]] of Object.entries(expected)) {
+      const directory = await fs.mkdtemp(path.join(os.tmpdir(), `capability-eval-${id}-`))
+      temporary.push(directory)
+      const definition = suite.cases.find((item) => item.id === id)!
+      await prepareFixture(definition, directory)
+      await runFixtureOutcome(id, directory)
+      const content = await fs.readFile(path.join(directory, evidence))
+      if (id === "browser") {
+        expect(content.readUInt32BE(16)).toBe(640)
+        expect(content.readUInt32BE(20)).toBe(480)
+      }
+      if (id === "mobile") {
+        const object = await fs.readFile(path.join(directory, ".eval/evidence/mobile.o"))
+        expect(object.subarray(0, 4).toString("hex")).toBe("cffaedfe")
+      }
+      expect(id === "browser" ? content.subarray(0, 8).toString("hex") : content.toString("utf8"), id).toContain(
+        contains,
+      )
+    }
+
+    const deployRoot = temporary.find((item) => item.includes("capability-eval-deploy-"))!
+    const port = Number(await fs.readFile(path.join(deployRoot, ".eval/evidence/deploy-port.txt"), "utf8"))
+    await assert.rejects(fetch(`http://127.0.0.1:${port}/health`))
+
+    const githubRoot = temporary.find((item) => item.includes("capability-eval-github-"))!
+    const status = await runOwnedProcess({
+      command: "/usr/bin/git",
+      args: ["status", "--porcelain"],
+      cwd: githubRoot,
+      environment: process.env,
+    })
+    expect(status.stdout).toBe("")
+  })
+
+  test("dependency fixture fails before local remediation and succeeds after it", async () => {
+    const suite = await loadSuite(path.join(import.meta.dir, "../../eval/capability/cases.json"))
+    const definition = suite.cases.find((item) => item.id === "missing-dependency-recovery")!
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), "capability-eval-dependency-"))
+    temporary.push(directory)
+    await prepareFixture(definition, directory)
+    const cwd = path.join(directory, ".opencode", "capabilities", "dependency-recovery")
+    const check = () =>
+      runOwnedProcess({
+        command: process.execPath,
+        args: [path.join(import.meta.dir, "../../eval/capability/fixture/dependency-check.ts")],
+        cwd,
+        environment: process.env,
+      })
+
+    expect((await check()).code).not.toBe(0)
+    await fs.writeFile(path.join(directory, ".eval", "dependency-ready"), "ready\n", "utf8")
+    expect((await check()).code).toBe(0)
+    await runFixtureOutcome(definition.id, directory)
+    expect(await fs.readFile(path.join(directory, ".eval/evidence/dependency-recovery.json"), "utf8")).toBe(
+      '{"dependency":"available","retry":"passed"}\n',
+    )
+  })
+
+  test("requires an error-then-success retry and non-empty checkpoint fields", async () => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), "capability-eval-checkpoint-"))
+    temporary.push(directory)
+    await fs.writeFile(path.join(directory, "checkpoint-evidence.txt"), "CHECKPOINT_VERIFIED_742\n")
+    const db = new Database(path.join(directory, "eval.sqlite"))
+    db.run("CREATE TABLE session_loop (id TEXT PRIMARY KEY, state TEXT, checkpoint_json TEXT)")
+    db.run("INSERT INTO session_loop VALUES (?, ?, ?)", [
+      "loop_eval",
+      "completed",
+      JSON.stringify({
+        verifiedFacts: [{ claim: "CHECKPOINT_VERIFIED_742", evidence: ["checkpoint-evidence.txt"] }],
+        artifacts: ["checkpoint-evidence.txt"],
+        nextAction: "continue",
+      }),
+    ])
+    db.close()
+    const dependency = {
+      id: "dependency",
+      description: "dependency recovery",
+      verifier: { type: "dependency-recovery" as const, capability: "dependency-recovery" },
+    }
+    const checkpoint = {
+      id: "checkpoint",
+      description: "checkpoint evidence",
+      verifier: { type: "checkpoint-evidence" as const },
+    }
+    const definition = {
+      id: "evidence",
+      version: 1,
+      requiredCapabilities: ["dependency-recovery"],
+      criteria: [dependency, checkpoint],
+    }
+    const trace = [
+      {
+        type: "tool_use",
+        part: {
+          tool: "capability_enable",
+          state: { status: "error", input: { id: "dependency-recovery", profile: "default" } },
+        },
+      },
+      {
+        type: "tool_use",
+        part: {
+          tool: "capability_enable",
+          state: { status: "completed", input: { id: "dependency-recovery", profile: "default" } },
+        },
+      },
+      {
+        type: "tool_use",
+        part: {
+          tool: "loop_checkpoint",
+          state: {
+            status: "completed",
+            input: {
+              id: "loop_eval",
+              verifiedFacts: [{ claim: "verified", evidence: ["artifact:evidence.json"] }],
+              artifacts: ["evidence.json"],
+              nextAction: "continue",
+            },
+          },
+        },
+      },
+    ]
+
+    expect((await verifyCriterion(dependency, definition, process.cwd(), [], [], [], trace)).passed).toBe(true)
+    expect((await verifyCriterion(checkpoint, definition, directory, [], [], [], trace)).passed).toBe(true)
+    await fs.unlink(path.join(directory, "eval.sqlite"))
+    expect((await verifyCriterion(checkpoint, definition, directory, [], [], [], trace)).passed).toBe(false)
+    expect((await verifyCriterion(dependency, definition, process.cwd(), [], [], [], trace.slice(1))).passed).toBe(
+      false,
+    )
+    expect((await verifyCriterion(checkpoint, definition, process.cwd(), [], [], [], trace.slice(0, 2))).passed).toBe(
+      false,
+    )
   })
 
   test("parses explicit modes and output without mutating process configuration", () => {
@@ -221,6 +447,26 @@ describe("capability Qwen evaluation runner", () => {
     expect({ ...baseline, permission: candidate.permission }).toEqual(candidate)
     expect(baseline.permission).toHaveProperty("capability_*", "deny")
     expect(candidate.permission).not.toHaveProperty("capability_*")
+  })
+
+  test("applies declared context and sampling to the selected model", () => {
+    const config = buildEvaluationConfig(
+      { provider: { qwen: { models: { model: { limit: { output: 1024 } } } } } },
+      "candidate",
+      "observer",
+      "qwen/model",
+      { temperature: 0.2, contextTokens: 8192, reasoning: false },
+    )
+    expect(config.provider.qwen).toMatchObject({ models: { model: { limit: { output: 1024, context: 8192 } } } })
+    expect(config.agent.build.temperature).toBe(0.2)
+  })
+
+  test("redacts credential values and private diagnostic paths in error text", () => {
+    const result = redact(
+      "token=secret-value clientSecret=hidden password=hunter2 /private/var/tmp/eval/private.json http://name:pass@internal.example/ ses_123",
+    )
+    for (const secret of ["secret-value", "hidden", "hunter2", "/private/var", "name:pass", "ses_123"])
+      expect(result).not.toContain(secret)
   })
 
   test("does not treat a failed capability enable call as an activation", () => {
@@ -275,7 +521,7 @@ describe("capability Qwen evaluation runner", () => {
       "; ",
     )
 
-    await expect(
+    await assert.rejects(
       runOwnedProcess({
         command: "/bin/sh",
         args: ["-c", script],
@@ -286,7 +532,8 @@ describe("capability Qwen evaluation runner", () => {
           throw new Error("injected failure")
         },
       }),
-    ).rejects.toThrow("injected failure")
+      /injected failure/,
+    )
 
     const owned = (await Bun.file(pids).text()).trim().split("\n").map(Number)
     expect(owned.length).toBe(2)
@@ -302,7 +549,7 @@ describe("capability Qwen evaluation runner", () => {
       "; ",
     )
 
-    await expect(
+    await assert.rejects(
       runOwnedProcess({
         command: "/bin/sh",
         args: ["-c", script],
@@ -314,7 +561,8 @@ describe("capability Qwen evaluation runner", () => {
           abort.abort()
         },
       }),
-    ).rejects.toThrow("aborted")
+      /aborted/,
+    )
 
     const owned = (await Bun.file(pids).text()).trim().split("\n").map(Number)
     expect(owned.every((pid) => !isAlive(pid))).toBe(true)
@@ -346,6 +594,11 @@ describe("capability Qwen evaluation runner", () => {
         quantization: "UD-IQ2_XXS",
         serverCommit: "server-commit",
         openCodeCommit: "open-code-commit",
+        sourceDigest: "digest",
+        dirty: false,
+        serverCommitProbe: "test",
+        seedStatus: "test",
+        contextStatus: "test",
         seed: 7,
         settings: { temperature: 0 },
       },

@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process"
+import { createHash } from "node:crypto"
+import z from "zod"
 import fs from "fs/promises"
 import os from "os"
 import path from "path"
@@ -45,8 +47,34 @@ export type Trace = {
 }
 
 type CapabilityEvent = { readonly type: string; readonly data?: Record<string, unknown> }
+const traceSchema: z.ZodType<Trace> = z.object({
+  type: z.string().optional(),
+  timestamp: z.number().optional(),
+  part: z
+    .object({
+      type: z.string().optional(),
+      tool: z.string().optional(),
+      text: z.string().optional(),
+      state: z.object({ status: z.string().optional(), input: z.unknown().optional() }).optional(),
+      tokens: z
+        .object({
+          input: z.number().optional(),
+          output: z.number().optional(),
+          reasoning: z.number().optional(),
+          cache: z.object({ read: z.number().optional(), write: z.number().optional() }).optional(),
+        })
+        .optional(),
+    })
+    .optional(),
+})
+const eventSchema: z.ZodType<CapabilityEvent> = z.object({
+  type: z.string(),
+  data: z.record(z.string(), z.unknown()).optional(),
+})
 
 type EvaluatedRun = CaseScore & {
+  readonly initialToolNames: ReadonlyArray<string>
+  readonly finalToolNames: ReadonlyArray<string>
   readonly caseVersion: number
   readonly mode: Mode
   readonly verifiedOutcomes: ReadonlyArray<{
@@ -79,6 +107,11 @@ type Report = {
     readonly quantization: string
     readonly serverCommit: string
     readonly openCodeCommit: string
+    readonly sourceDigest: string
+    readonly dirty: boolean
+    readonly serverCommitProbe: string
+    readonly seedStatus: string
+    readonly contextStatus: string
     readonly seed: number | null
     readonly settings: Readonly<Record<string, string | number | boolean | null>>
   }
@@ -96,16 +129,90 @@ type ProviderConfig = {
 
 type SchemaObserver = {
   readonly config: ProviderConfig
-  readonly comparison: () => NonNullable<EvaluatedRun["capabilitySchemaCost"]>
+  readonly comparison: () => ReturnType<typeof summarizeProviderSchemas>
   readonly stop: () => void
+  readonly serverCommit: () => string | undefined
 }
 
 const managementTools = new Set(["capability_disable", "capability_enable", "capability_search", "capability_status"])
 
-export function buildEvaluationConfig(source: ProviderConfig, mode: Mode, observer: string, modelID: string) {
+// An explicit eval surface makes newly introduced or inactive pack tools fail closed.
+const baseTools = new Set([
+  "read",
+  "glob",
+  "grep",
+  "task",
+  "webfetch",
+  "websearch",
+  "todowrite",
+  "todoread",
+  "skill",
+  "question",
+  "lsp",
+  "plan_enter",
+  "plan_exit",
+  "invalid",
+  "bash",
+  "edit",
+  "write",
+  "apply_patch",
+  "execute",
+  "loop_create",
+  "loop_list",
+  "loop_update",
+  "loop_delete",
+  "loop_checkpoint",
+  "loop_wakeup",
+])
+
+export function schemaBudget(baseline: ReadonlyArray<string>, candidate: ReadonlyArray<string>) {
+  if (baseline.length === 0 || new Set(candidate).size !== candidate.length) return false
+  if (baseline.some((name) => !baseTools.has(name))) return false
+  return sameStrings(candidate, [...baseline, ...managementTools])
+}
+
+export async function validateRawOutput(directory: string) {
+  const resolved = path.resolve(directory)
+  // A raw sink is allowed only when Git itself proves that its contents are ignored.
+  // Reject existing symlink aliases before checking the lexical ignore rule.
+  const ancestor = async (value: string): Promise<string> => {
+    const stat = await fs.lstat(value).catch(() => undefined)
+    if (!stat) return ancestor(path.dirname(value))
+    if ((await fs.realpath(value)) !== value) throw new Error("Raw output must not use symlink paths")
+    return value
+  }
+  await ancestor(resolved)
+  const result = await runOwnedProcess({
+    command: "/usr/bin/git",
+    args: ["check-ignore", "--quiet", "--", path.join(resolved, "trace.jsonl")],
+    cwd: path.join(import.meta.dir, "../.."),
+    environment: process.env,
+  })
+  if (result.code !== 0) throw new Error("Raw output must be inside an explicitly Git-ignored directory")
+}
+
+export function buildEvaluationConfig(
+  source: ProviderConfig,
+  mode: Mode,
+  observer: string,
+  modelID: string,
+  settings: Suite["model"]["settings"] = { temperature: 0 },
+) {
   const providerID = modelID.split("/")[0]
   const provider = source.provider?.[providerID]
   if (!provider) throw new Error(`Configured provider is missing: ${providerID}`)
+  const selected = isRecord(provider) ? provider : {}
+  const models = isRecord(selected.models) ? selected.models : {}
+  const modelName = modelID.slice(providerID.length + 1)
+  const model = isRecord(models[modelName]) ? models[modelName] : {}
+  const limit = isRecord(model.limit) ? model.limit : {}
+  const configured =
+    typeof settings.contextTokens === "number"
+      ? {
+          ...selected,
+          models: { ...models, [modelName]: { ...model, limit: { ...limit, context: settings.contextTokens } } },
+        }
+      : provider
   const permission = {
     bash: "deny",
     edit: "deny",
@@ -115,9 +222,9 @@ export function buildEvaluationConfig(source: ProviderConfig, mode: Mode, observ
   }
   return {
     model: modelID,
-    provider: { [providerID]: provider },
+    provider: { [providerID]: configured },
     plugin: [observer],
-    agent: { build: { temperature: 0 } },
+    agent: { build: { temperature: typeof settings.temperature === "number" ? settings.temperature : 0 } },
     permission,
   }
 }
@@ -149,14 +256,15 @@ export function readTraceEvidence(trace: ReadonlyArray<Trace>) {
   return { toolCalls, activations }
 }
 
-export function summarizeProviderSchemas(requestBodies: ReadonlyArray<unknown>, capabilityIDs: ReadonlyArray<string>) {
-  const snapshots = requestBodies.map((body) => providerCapabilityDefinitions(body, capabilityIDs))
-  const taskSnapshots = snapshots.filter((snapshot) =>
-    snapshot.some((definition) => managementTools.has(definition.name)),
-  )
+export function summarizeProviderSchemas(requestBodies: ReadonlyArray<unknown>) {
+  const taskSnapshots = requestBodies.map(providerToolDefinitions).filter((snapshot) => snapshot.length > 0)
   const baseline = taskSnapshots[0] ?? []
   const activated = taskSnapshots.at(-1) ?? baseline
-  return CapabilityTokenEstimate.compare(baseline, activated)
+  return {
+    initialToolNames: baseline.map((definition) => definition.name).toSorted(),
+    finalToolNames: activated.map((definition) => definition.name).toSorted(),
+    comparison: CapabilityTokenEstimate.compare(baseline, activated),
+  }
 }
 
 export function parseArguments(argv: ReadonlyArray<string>): Arguments {
@@ -171,7 +279,12 @@ export function parseArguments(argv: ReadonlyArray<string>): Arguments {
     if (!next || next.startsWith("--")) throw new Error(`${name} requires a value`)
     return next
   }
-  const cases = argv.flatMap((item, index) => (item === "--case" && argv[index + 1] ? [argv[index + 1]] : []))
+  const cases = argv.flatMap((item, index) => {
+    if (item !== "--case") return []
+    const next = argv[index + 1]
+    if (!next || next.startsWith("--")) throw new Error("--case requires a value")
+    return [next]
+  })
   const known = new Set(["--dry-run", "--baseline", "--candidate", "--output", "--raw-output", "--case"])
   argv.forEach((item, index) => {
     if (item.startsWith("--") && !known.has(item)) throw new Error(`Unknown option: ${item}`)
@@ -209,15 +322,11 @@ export async function runOwnedProcess(input: OwnedProcessInput) {
   input.signal?.addEventListener("abort", abort, { once: true })
   const interrupted = ["SIGINT", "SIGTERM", "SIGHUP"] as const
   let interruption: (typeof interrupted)[number] | undefined
-  const interrupt = Object.fromEntries(
-    interrupted.map((signal) => [
-      signal,
-      () => {
-        interruption = signal
-        abort()
-      },
-    ]),
-  ) as Record<(typeof interrupted)[number], () => void>
+  const handler = (signal: (typeof interrupted)[number]) => () => {
+    interruption = signal
+    abort()
+  }
+  const interrupt = { SIGINT: handler("SIGINT"), SIGTERM: handler("SIGTERM"), SIGHUP: handler("SIGHUP") }
   interrupted.forEach((signal) => process.once(signal, interrupt[signal]))
   try {
     await input.afterSpawn?.(child.pid)
@@ -232,10 +341,9 @@ export async function runOwnedProcess(input: OwnedProcessInput) {
   }
 }
 
-export async function writeReports(directory: string, input: unknown) {
-  const report = redact(input) as Report
+export async function writeReports(directory: string, report: Report) {
   await fs.mkdir(directory, { recursive: true })
-  await fs.writeFile(path.join(directory, "comparison.json"), `${JSON.stringify(report, null, 2)}\n`, "utf8")
+  await fs.writeFile(path.join(directory, "comparison.json"), `${JSON.stringify(redact(report), null, 2)}\n`, "utf8")
   const rows = [...report.baseline.map((item) => resultRow(item)), ...report.candidate.map((item) => resultRow(item))]
   const markdown = [
     "# Capability Qwen evaluation",
@@ -259,11 +367,12 @@ export async function writeReports(directory: string, input: unknown) {
     "Research prefill/provider input is reported independently from assistant output.",
     "",
   ].join("\n")
-  await fs.writeFile(path.join(directory, "comparison.md"), markdown, "utf8")
+  await fs.writeFile(path.join(directory, "comparison.md"), String(redact(markdown)), "utf8")
 }
 
 async function main() {
   const args = parseArguments(process.argv.slice(2))
+  if (args.rawOutput) await validateRawOutput(args.rawOutput)
   const suite = await loadSuite(path.join(import.meta.dir, "cases.json"))
   const selected = args.cases.length === 0 ? suite.cases : suite.cases.filter((item) => args.cases.includes(item.id))
   if (selected.length !== (args.cases.length || suite.cases.length))
@@ -275,6 +384,7 @@ async function main() {
     return
   }
   if (!process.env.RUNPOD_QWEN_API_KEY) throw new Error("RUNPOD_QWEN_API_KEY is required")
+  const source = await sourceIdentity()
   const runRoot = await fs.mkdtemp(path.join(os.tmpdir(), "opencode-capability-eval-"))
   try {
     const runs = await selected.reduce<Promise<EvaluatedRun[]>>(async (pending, definition) => {
@@ -287,30 +397,50 @@ async function main() {
     }, Promise.resolve([]))
     const baseline = runs.filter((item) => item.mode === "baseline")
     const candidate = runs.filter((item) => item.mode === "candidate")
+    const actualBudget =
+      baseline.length > 0 &&
+      candidate.length === baseline.length &&
+      candidate.every((run) => {
+        const control = baseline.find((item) => item.caseID === run.caseID)
+        return !!control && schemaBudget(control.initialToolNames, run.initialToolNames)
+      })
     const comparison = scoreComparison({
       baseline,
       candidate,
       thresholds: suite.thresholds,
-      defaultCapabilityTools: suite.defaultCapabilityTools.length,
+      defaultCapabilityTools: actualBudget ? managementTools.size : Number.MAX_SAFE_INTEGER,
     })
     const report: Report = {
       suiteVersion: suite.version,
       metadata: {
         modelID: suite.model.id,
         quantization: process.env.QWEN_EVAL_QUANTIZATION ?? suite.model.quantization,
-        serverCommit: process.env.QWEN_EVAL_SERVER_COMMIT ?? suite.model.serverCommit,
-        openCodeCommit: await gitCommit(),
+        serverCommit: process.env.QWEN_EVAL_SERVER_COMMIT ?? observedServerCommit ?? "unavailable",
+        serverCommitProbe: process.env.QWEN_EVAL_SERVER_COMMIT
+          ? "operator supplied"
+          : "inspected x-server-commit and x-build-commit response headers",
+        openCodeCommit: source.commit,
+        sourceDigest: source.digest,
+        dirty: source.dirty,
+        seedStatus:
+          suite.model.seed === null
+            ? "not requested"
+            : "sent as seed in each task request; provider determinism not guaranteed",
+        contextStatus: "applied to client model context limit; server capacity not independently verified",
         seed: suite.model.seed,
         settings: suite.model.settings,
       },
       thresholds: suite.thresholds,
-      defaultCapabilityTools: suite.defaultCapabilityTools.length,
+      defaultCapabilityTools: Math.max(
+        0,
+        ...candidate.map((run) => run.initialToolNames.filter((name) => managementTools.has(name)).length),
+      ),
       baseline,
       candidate,
       comparison,
     }
     await writeReports(args.output, report)
-    process.stdout.write(`${JSON.stringify({ accepted: comparison.accepted, output: path.resolve(args.output) })}\n`)
+    process.stdout.write(`${JSON.stringify({ accepted: comparison.accepted })}\n`)
     if (args.modes.length === 2 && !comparison.accepted) process.exitCode = 1
   } finally {
     await fs.rm(runRoot, { force: true, recursive: true })
@@ -330,19 +460,20 @@ async function evaluate(
   await prepareFixture(definition, directory)
   const configDirectory = path.join(directory, "config", "opencode")
   await fs.mkdir(configDirectory, { recursive: true })
-  const providerSource = JSON.parse(
+  const providerSource: unknown = JSON.parse(
     await fs.readFile(
       process.env.OPENCODE_EVAL_PROVIDER_CONFIG ?? path.join(os.homedir(), ".config", "opencode", "opencode.json"),
       "utf8",
     ),
-  ) as ProviderConfig
-  const providerObserver = observeProvider(providerSource, suite.model.id, definition.requiredCapabilities ?? [])
+  )
+  if (!isRecord(providerSource) || !isRecord(providerSource.provider)) throw new Error("Invalid provider configuration")
+  const providerObserver = observeProvider({ provider: providerSource.provider }, suite.model)
   let result: Awaited<ReturnType<typeof runOwnedProcess>>
   const started = performance.now()
   try {
     await fs.writeFile(
       path.join(configDirectory, "opencode.json"),
-      `${JSON.stringify(buildEvaluationConfig(providerObserver.config, mode, pathToFileURL(path.join(import.meta.dir, "fixture", "event-observer.ts")).href, suite.model.id), null, 2)}\n`,
+      `${JSON.stringify(buildEvaluationConfig(providerObserver.config, mode, pathToFileURL(path.join(import.meta.dir, "fixture", "event-observer.ts")).href, suite.model.id, suite.model.settings), null, 2)}\n`,
       "utf8",
     )
     await fs.writeFile(traceFile, "", "utf8")
@@ -361,7 +492,7 @@ async function evaluate(
         "--format",
         "json",
         "--auto",
-        "--thinking",
+        ...(suite.model.settings.reasoning === true ? ["--thinking"] : []),
         "--",
         definition.prompt ?? definition.description ?? definition.id,
       ],
@@ -369,12 +500,14 @@ async function evaluate(
       environment: evaluationEnvironment(directory, configDirectory, eventFile),
     })
   } finally {
+    observedServerCommit ??= providerObserver.serverCommit()
     providerObserver.stop()
   }
   const wallTimeMs = Math.round(performance.now() - started)
   await fs.writeFile(traceFile, result.stdout, "utf8")
   if (result.code !== 0) await fs.writeFile(path.join(directory, "stderr.log"), result.stderr, "utf8")
   if (rawOutput) {
+    await validateRawOutput(rawOutput)
     await fs.mkdir(rawOutput, { recursive: true })
     const prefix = path.join(rawOutput, `${definition.id}-${mode}`)
     await Promise.all([
@@ -383,11 +516,13 @@ async function evaluate(
       fs.copyFile(eventFile, `${prefix}.events.jsonl`),
     ])
   }
-  const trace = parseJsonLines<Trace>(result.stdout)
-  const events = parseJsonLines<CapabilityEvent>(await fs.readFile(eventFile, "utf8"))
+  const trace = parseJsonLines(result.stdout, traceSchema)
+  const events = parseJsonLines(await fs.readFile(eventFile, "utf8"), eventSchema)
   const { toolCalls, activations } = readTraceEvidence(trace)
   const verifiedOutcomes = await Promise.all(
-    definition.criteria.map((criterion) => verify(criterion, definition, directory, toolCalls, activations, events)),
+    definition.criteria.map((criterion) =>
+      verifyCriterion(criterion, definition, directory, toolCalls, activations, events, trace),
+    ),
   )
   const finalText = trace.filter((item) => item.type === "text" && item.part?.text).at(-1)?.part?.text
   const score = scoreCase(definition, { verifiedOutcomes, toolCalls, activations, finalText })
@@ -416,7 +551,9 @@ async function evaluate(
     assistantOutputTokens,
     timeToFirstUsefulActionMs: firstUseful?.timestamp && firstTimestamp ? firstUseful.timestamp - firstTimestamp : null,
     wallTimeMs,
-    capabilitySchemaCost: providerObserver.comparison(),
+    initialToolNames: providerObserver.comparison().initialToolNames,
+    finalToolNames: providerObserver.comparison().finalToolNames,
+    capabilitySchemaCost: providerObserver.comparison().comparison,
   }
 }
 
@@ -431,7 +568,14 @@ export async function prepareFixture(definition: CaseDefinition, directory: stri
   if (repository.code !== 0)
     throw new Error(`Unable to initialize isolated eval repository: ${repository.stderr.trim()}`)
   await fs.writeFile(path.join(directory, "README.md"), `# ${definition.id}\n`, "utf8")
-  if (definition.fixture !== "proof-capability") return
+  if (definition.fixture === "checkpoint") {
+    await fs.writeFile(path.join(directory, "checkpoint-evidence.txt"), "CHECKPOINT_VERIFIED_742\n")
+    return
+  }
+  if (definition.fixture === "outcome-capability") {
+    await prepareOutcomeFixture(definition, directory)
+    return
+  }
   const pack = path.join(directory, ".opencode", "capabilities", "eval-proof")
   await fs.mkdir(pack, { recursive: true })
   await fs.writeFile(
@@ -460,6 +604,123 @@ export async function prepareFixture(definition: CaseDefinition, directory: stri
   )
 }
 
+async function prepareOutcomeFixture(definition: CaseDefinition, directory: string) {
+  const capability = definition.requiredCapabilities?.[0]
+  const profile = capability ? definition.expectedProfiles?.[capability]?.[0] : undefined
+  if (!capability || !profile) throw new Error(`Outcome fixture requires one capability/profile: ${definition.id}`)
+  const input = path.join(directory, ".eval", "input")
+  await fs.mkdir(input, { recursive: true })
+  const seeded: Record<string, string> = {
+    browser: '<main data-state="ready">Capability evaluation ready</main>\n',
+    research: "Capability evals require external evidence.\nFixture primary source, revision 1.\n",
+    mobile: '{"bundle":"com.example.eval","target":"ios"}\n',
+    security: "API_TOKEN=EVAL-SECRET-001\n",
+    documents: "Evaluation document\nThe verification code is DOC-742.\n",
+    github: "repository fixture\n",
+    deploy: "GET /health -> ok\n",
+    "missing-dependency-recovery": "Create ../dependency-ready after the failed activation, then retry.\n",
+  }
+  const names: Record<string, string> = {
+    browser: "page.html",
+    research: "primary-source.txt",
+    mobile: "mobile-project.json",
+    security: "vulnerable.env",
+    documents: "document.txt",
+    github: "repository.txt",
+    deploy: "service.txt",
+    "missing-dependency-recovery": "remediation.txt",
+  }
+  const content = seeded[definition.id]
+  const name = names[definition.id]
+  if (!content || !name) throw new Error(`Missing deterministic fixture input: ${definition.id}`)
+  await fs.writeFile(path.join(input, name), content, "utf8")
+  const pack = path.join(directory, ".opencode", "capabilities", capability)
+  await fs.mkdir(pack, { recursive: true })
+  await fs.writeFile(
+    path.join(pack, "capability.json"),
+    `${JSON.stringify(
+      {
+        id: capability,
+        version: 1,
+        description: `Execute the deterministic ${definition.id} evaluation outcome and preserve external evidence.`,
+        platforms: ["darwin", "linux"],
+        skills: [],
+        runtimes: [
+          {
+            id: "fixture",
+            type: "mcp",
+            command: [process.execPath, path.join(import.meta.dir, "fixture", "outcome-mcp.ts")],
+            tools:
+              definition.id === "missing-dependency-recovery"
+                ? ["verify_outcome", "repair_dependency"]
+                : ["verify_outcome"],
+          },
+        ],
+        profiles: {
+          ...(definition.id === "missing-dependency-recovery"
+            ? {
+                repair: {
+                  description:
+                    "After default activation fails, enable repair and call repair_dependency, then retry default.",
+                  skills: [],
+                  runtimes: ["fixture"],
+                },
+              }
+            : {}),
+          [profile]: {
+            description: `Run only the deterministic ${definition.id} fixture.`,
+            skills: [],
+            runtimes: ["fixture"],
+            ...(definition.id === "mobile" ? { platforms: ["darwin"] } : {}),
+          },
+        },
+        ...(definition.id === "missing-dependency-recovery"
+          ? {
+              dependencies: [
+                {
+                  id: "fixture-ready",
+                  check: [process.execPath, path.join(import.meta.dir, "fixture", "dependency-check.ts")],
+                  profiles: [profile],
+                },
+              ],
+            }
+          : {}),
+      },
+      null,
+      2,
+    )}\n`,
+    "utf8",
+  )
+  if (definition.id !== "github") return
+  await fs.writeFile(
+    path.join(directory, ".gitignore"),
+    "config/\ntrace.jsonl\nevents.jsonl\nstderr.log\neval.sqlite*\n",
+  )
+  const add = await runOwnedProcess({
+    command: "/usr/bin/git",
+    args: ["add", "."],
+    cwd: directory,
+    environment: process.env,
+  })
+  if (add.code !== 0) throw new Error(`Unable to stage Git fixture: ${add.stderr.trim()}`)
+  const commit = await runOwnedProcess({
+    command: "/usr/bin/git",
+    args: [
+      "-c",
+      "user.name=Capability Eval",
+      "-c",
+      "user.email=eval@invalid",
+      "commit",
+      "--quiet",
+      "-m",
+      "Initial fixture commit",
+    ],
+    cwd: directory,
+    environment: process.env,
+  })
+  if (commit.code !== 0) throw new Error(`Unable to commit Git fixture: ${commit.stderr.trim()}`)
+}
+
 function evaluationEnvironment(directory: string, configDirectory: string, eventFile: string) {
   return {
     ...Object.fromEntries(
@@ -475,21 +736,23 @@ function evaluationEnvironment(directory: string, configDirectory: string, event
       ),
     ),
     OPENCODE_CONFIG_DIR: configDirectory,
+    OPENCODE_DB: path.join(directory, "eval.sqlite"),
     XDG_CONFIG_HOME: path.dirname(configDirectory),
     OPENCODE_DISABLE_DEFAULT_PLUGINS: "1",
     OPENCODE_DISABLE_EXTERNAL_SKILLS: "1",
     OPENCODE_DISABLE_LSP_DOWNLOAD: "1",
     OPENCODE_DISABLE_AUTOUPDATE: "1",
     CAPABILITY_EVAL_EVENT_FILE: eventFile,
+    CAPABILITY_EVAL_CASE: path.basename(directory).replace(/-(?:baseline|candidate)$/, ""),
+    CAPABILITY_EVAL_ROOT: directory,
     CAPABILITY_EVAL_PROOF_FILE: path.join(directory, ".opencode", "capabilities", "eval-proof", "proof.txt"),
   }
 }
 
-function observeProvider(
-  config: ProviderConfig,
-  modelID: string,
-  capabilityIDs: ReadonlyArray<string>,
-): SchemaObserver {
+let observedServerCommit: string | undefined
+
+function observeProvider(config: ProviderConfig, model: Suite["model"]): SchemaObserver {
+  const modelID = model.id
   const providerID = modelID.split("/")[0]
   const selected = config.provider?.[providerID]
   if (!isRecord(selected)) throw new Error(`Configured provider is invalid: ${providerID}`)
@@ -499,14 +762,24 @@ function observeProvider(
   }
   const upstreamBase = new URL(options.baseURL)
   const requestBodies: unknown[] = []
+  let serverCommit: string | undefined
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
     async fetch(request) {
-      const bytes = await request.arrayBuffer()
+      let bytes = new Uint8Array(await request.arrayBuffer())
       if (bytes.byteLength > 0) {
         try {
-          requestBodies.push(JSON.parse(new TextDecoder().decode(bytes)))
+          const body: unknown = JSON.parse(new TextDecoder().decode(bytes))
+          if (isRecord(body) && Array.isArray(body.tools)) {
+            if (model.seed !== null) body.seed = model.seed
+            body.temperature = model.settings.temperature ?? 0
+            bytes = new TextEncoder().encode(JSON.stringify(body))
+          }
+          if (isRecord(body) && Array.isArray(body.tools) && body.tools.length > 0) {
+            // Retain only first/last schema snapshots, never prompts or request credentials.
+            requestBodies[Math.min(requestBodies.length, 1)] = { tools: body.tools }
+          }
         } catch {
           // Non-JSON provider requests carry no tool schemas and are intentionally ignored.
         }
@@ -525,6 +798,8 @@ function observeProvider(
         body: bytes.byteLength > 0 ? bytes : undefined,
         signal: request.signal,
       })
+      const revision = response.headers.get("x-server-commit") ?? response.headers.get("x-build-commit")
+      if (revision && /^[a-f0-9]{7,64}$/i.test(revision)) serverCommit = revision
       return new Response(response.body, {
         status: response.status,
         statusText: response.statusText,
@@ -543,24 +818,21 @@ function observeProvider(
         },
       },
     },
-    comparison: () => summarizeProviderSchemas(requestBodies, capabilityIDs),
+    comparison: () => summarizeProviderSchemas(requestBodies),
+    serverCommit: () => serverCommit,
     stop: () => server.stop(true),
   }
 }
 
-function providerCapabilityDefinitions(body: unknown, capabilityIDs: ReadonlyArray<string>): ToolDefinition[] {
+function providerToolDefinitions(body: unknown): ToolDefinition[] {
   if (!isRecord(body) || !Array.isArray(body.tools)) return []
   return body.tools.flatMap((item) => {
     if (!isRecord(item)) return []
     const source = isRecord(item.function) ? item.function : item
     if (typeof source.name !== "string") return []
-    const name = source.name
-    const capabilityTool =
-      managementTools.has(name) || capabilityIDs.some((capability) => name.startsWith(`${capability}_`))
-    if (!capabilityTool) return []
     return [
       {
-        name,
+        name: source.name,
         description: typeof source.description === "string" ? source.description : "",
         inputSchema: isRecord(source.parameters) ? source.parameters : {},
       } as ToolDefinition,
@@ -572,13 +844,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value)
 }
 
-async function verify(
+export async function verifyCriterion(
   criterion: CaseDefinition["criteria"][number],
   definition: CaseDefinition,
   directory: string,
   toolCalls: ReadonlyArray<{ readonly name: string; readonly status: "completed" | "error" }>,
   activations: ReadonlyArray<{ readonly capability: string; readonly profiles: ReadonlyArray<string> }>,
   events: ReadonlyArray<CapabilityEvent>,
+  trace: ReadonlyArray<Trace> = [],
 ) {
   const verifier = criterion.verifier
   if (!verifier) return { criterion: criterion.id, passed: false, evidenceRef: "missing-verifier" }
@@ -601,6 +874,110 @@ async function verify(
   if (verifier.type === "event") {
     const passed = events.some((event) => event.type === verifier.event)
     return { criterion: criterion.id, passed, evidenceRef: `event:${verifier.event}` }
+  }
+  if (verifier.type === "binary-artifact") {
+    const content = await fs.readFile(path.join(directory, verifier.path)).catch(() => undefined)
+    const prefix = Buffer.from(verifier.prefix, "base64")
+    const passed =
+      content !== undefined &&
+      content.byteLength >= verifier.minimumBytes &&
+      content.subarray(0, prefix.length).equals(prefix)
+    return { criterion: criterion.id, passed, evidenceRef: `binary-artifact:${criterion.id}` }
+  }
+  if (verifier.type === "git-clean") {
+    const status = await runOwnedProcess({
+      command: "/usr/bin/git",
+      args: ["status", "--porcelain"],
+      cwd: directory,
+      environment: process.env,
+    })
+    return {
+      criterion: criterion.id,
+      passed: status.code === 0 && status.stdout.length === 0,
+      evidenceRef: `git-status:${criterion.id}`,
+    }
+  }
+  if (verifier.type === "port-closed") {
+    const port = Number(await fs.readFile(path.join(directory, verifier.path), "utf8").catch(() => ""))
+    const reachable =
+      Number.isInteger(port) && port > 0 && port <= 65535
+        ? await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(500) }).then(
+            () => true,
+            () => false,
+          )
+        : true
+    return { criterion: criterion.id, passed: !reachable, evidenceRef: `closed-port:${criterion.id}` }
+  }
+  if (verifier.type === "dependency-recovery") {
+    const attempts = trace.filter(
+      (item) =>
+        item.type === "tool_use" &&
+        item.part?.tool === "capability_enable" &&
+        isRecord(item.part.state?.input) &&
+        item.part.state.input.id === verifier.capability,
+    )
+    const failure = attempts.findIndex((item) => item.part?.state?.status === "error")
+    const success = attempts.findIndex((item, index) => index > failure && item.part?.state?.status === "completed")
+    return {
+      criterion: criterion.id,
+      passed: failure >= 0 && success > failure,
+      evidenceRef: `dependency-retry:${verifier.capability}`,
+    }
+  }
+  if (verifier.type === "checkpoint-evidence") {
+    const checkpoint = trace.find(
+      (item) =>
+        item.type === "tool_use" && item.part?.tool === "loop_checkpoint" && item.part.state?.status === "completed",
+    )?.part?.state?.input
+    const input = isRecord(checkpoint) ? checkpoint : {}
+    const facts = Array.isArray(input.verifiedFacts) ? input.verifiedFacts : []
+    const evidence = facts.some(
+      (fact) =>
+        isRecord(fact) &&
+        Array.isArray(fact.evidence) &&
+        fact.evidence.some((item) => typeof item === "string" && item.length > 0),
+    )
+    const artifacts =
+      Array.isArray(input.artifacts) && input.artifacts.some((item) => typeof item === "string" && item.length > 0)
+    const nextAction = typeof input.nextAction === "string" && input.nextAction.trim().length > 0
+    const persisted = await (async () => {
+      if (typeof input.id !== "string" || !(await Bun.file(path.join(directory, "eval.sqlite")).exists())) return false
+      const { Database } = await import("bun:sqlite")
+      const db = new Database(path.join(directory, "eval.sqlite"), { readonly: true })
+      try {
+        const row = db
+          .query<
+            { state: string; checkpoint_json: string },
+            [string]
+          >("SELECT state, checkpoint_json FROM session_loop WHERE id = ?")
+          .get(input.id)
+        if (!row || row.state !== "completed") return false
+        const value: unknown = JSON.parse(row.checkpoint_json)
+        if (!isRecord(value) || !Array.isArray(value.verifiedFacts) || !Array.isArray(value.artifacts)) return false
+        const content = await fs.readFile(path.join(directory, "checkpoint-evidence.txt"), "utf8")
+        return (
+          content.trim() === "CHECKPOINT_VERIFIED_742" &&
+          value.artifacts.includes("checkpoint-evidence.txt") &&
+          typeof value.nextAction === "string" &&
+          value.nextAction.length > 0 &&
+          value.verifiedFacts.some(
+            (fact) =>
+              isRecord(fact) &&
+              typeof fact.claim === "string" &&
+              fact.claim.includes(content.trim()) &&
+              Array.isArray(fact.evidence) &&
+              fact.evidence.includes("checkpoint-evidence.txt"),
+          )
+        )
+      } finally {
+        db.close()
+      }
+    })().catch(() => false)
+    return {
+      criterion: criterion.id,
+      passed: facts.length > 0 && evidence && artifacts && nextAction && persisted,
+      evidenceRef: `checkpoint-database:${criterion.id}`,
+    }
   }
   const required = new Set(definition.requiredCapabilities ?? [])
   const passed = activations.every((activation) => required.has(activation.capability))
@@ -632,13 +1009,14 @@ function signalGroup(pid: number, signal: NodeJS.Signals) {
   }
 }
 
-function parseJsonLines<T>(input: string): T[] {
+function parseJsonLines<T>(input: string, schema: z.ZodType<T>): T[] {
   return input
     .split("\n")
     .filter((line) => line.trim().length > 0)
     .flatMap((line) => {
       try {
-        return [JSON.parse(line) as T]
+        const result = schema.safeParse(JSON.parse(line))
+        return result.success ? [result.data] : []
       } catch {
         return []
       }
@@ -671,19 +1049,43 @@ function formatRate(value: number) {
   return `${(value * 100).toFixed(1)}%`
 }
 
-async function gitCommit() {
+async function sourceIdentity() {
   const result = await runOwnedProcess({
     command: "/usr/bin/git",
     args: ["rev-parse", "HEAD"],
     cwd: path.join(import.meta.dir, "../../.."),
     environment: process.env,
   })
-  return result.code === 0 ? result.stdout.trim() : "unknown"
+  const cwd = path.join(import.meta.dir, "../../../..")
+  const status = await runOwnedProcess({
+    command: "/usr/bin/git",
+    args: ["status", "--porcelain", "--untracked-files=all"],
+    cwd,
+    environment: process.env,
+  })
+  const diff = await runOwnedProcess({
+    command: "/usr/bin/git",
+    args: ["diff", "HEAD", "--", "."],
+    cwd,
+    environment: process.env,
+  })
+  const digest = createHash("sha256").update(result.stdout).update(diff.stdout)
+  for (const file of (
+    await Array.fromAsync(new Bun.Glob("**/*").scan({ cwd: import.meta.dir, onlyFiles: true }))
+  ).sort()) {
+    if (file.startsWith("reports/")) continue
+    digest.update(file).update(await fs.readFile(path.join(import.meta.dir, file)))
+  }
+  return {
+    commit: result.code === 0 ? result.stdout.trim() : "unknown",
+    dirty: status.stdout.length > 0,
+    digest: digest.digest("hex"),
+  }
 }
 
 if (import.meta.main) {
   await main().catch((error) => {
-    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`)
+    process.stderr.write(`${String(redact(error instanceof Error ? error.message : String(error)))}\n`)
     process.exitCode = 1
   })
 }

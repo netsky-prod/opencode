@@ -19,7 +19,7 @@ bun run eval:capability --candidate --case missing-capability-recognition --outp
 
 With neither mode flag, both modes run. `--baseline` and `--candidate` are selection flags, not paths to mutable prior results. `--output` receives deterministic sanitized `comparison.json` and `comparison.md`; raw CLI traces and temporary fixtures remain in an OS temporary directory and are deleted after scoring.
 
-For local diagnosis only, `--raw-output ./ignored-local-directory` retains provider traces, stderr, and capability event streams. They can contain private prompts and machine details, so the directory must remain ignored and must never be committed.
+For local diagnosis only, `--raw-output ./ignored-local-directory` retains provider traces, stderr, and capability event streams. The runner checks `git check-ignore` and rejects non-ignored or symlink paths. These local traces can contain private prompts; use sanitized reports for sharing.
 
 The live runner requires `RUNPOD_QWEN_API_KEY`. It uses model `runpod-qwen/qwen3.8-27b`; quantization and server revision can be recorded with `QWEN_EVAL_QUANTIZATION` and `QWEN_EVAL_SERVER_COMMIT`. Credentials and endpoint hosts are neither printed nor persisted. Global MCPs, default plugins, external skills, LSP downloads, and auto-updates are disabled for both arms. The only intentional arm difference is visibility of the four capability-management tools.
 
@@ -27,11 +27,15 @@ The live runner requires `RUNPOD_QWEN_API_KEY`. It uses model `runpod-qwen/qwen3
 
 `cases.json` versions the prompts, fixtures, criteria, model, context, sampling settings, and acceptance thresholds. Both arms receive the same task text and equivalent fresh fixture contents. Reports record:
 
-- model ID, quantization, server revision, OpenCode revision, suite version, seed support, and settings;
+- model ID, declared quantization, server revision when response headers expose it, OpenCode revision, source digest and dirty state, suite version, seed support, and effective settings;
 - externally verified outcomes and incorrect tool-call count/rate;
 - provider input tokens, the first raw prefill separately, and assistant/reasoning output tokens when supplied by the provider;
 - time to first completed non-management action and total wall time;
-- baseline/activated schema bytes and the documented `ceil(UTF-8 bytes / 4)` estimate emitted by capability instrumentation.
+- first/final provider-visible tool names, complete schema bytes, and the documented `ceil(UTF-8 bytes / 4)` estimate. Acceptance compares the actual first snapshots across arms and requires exactly the four additional management tools; unexpected tools fail the check.
+
+The context setting is applied to OpenCode's client-side model limit. It does not resize or prove the remote server's KV cache. Non-null seeds and temperature are sent in task requests; deterministic execution still depends on the provider. `reasoning` controls the CLI trace display. Every arm uses a separate database and project root.
+
+Category fixtures are deterministic runtime integration cases, not benchmarks of general browser/research/code quality. Browser launches pinned Playwright Chromium and captures its rendered page; mobile compiles Swift into an iOS Simulator object on macOS with Xcode. Install Chromium with `bunx playwright install chromium`. Research and document cases use local known source documents, security detects a seeded finding, and deploy starts and stops a disposable HTTP service. Missing host dependencies fail explicitly. The checkpoint verifier reads the saved SQLite record. The final broader acceptance task separately exercises the shipped packs on an unseen task.
 
 There is no task-quality deadline. Each OpenCode child starts in its own process group, and the runner tears down that exact group on success, failure, abort, or interruption. Cleanup escalation is bounded so a broken child cannot strand descendants; it is not used as a model-quality cutoff.
 

@@ -1,4 +1,5 @@
 import fs from "fs/promises"
+import z from "zod"
 
 export type Criterion = {
   readonly id: string
@@ -8,6 +9,16 @@ export type Criterion = {
     | { readonly type: "tool"; readonly name: string; readonly status?: "completed" | "error" }
     | { readonly type: "activation"; readonly capability: string; readonly profiles?: ReadonlyArray<string> }
     | { readonly type: "event"; readonly event: string }
+    | {
+        readonly type: "binary-artifact"
+        readonly path: string
+        readonly prefix: string
+        readonly minimumBytes: number
+      }
+    | { readonly type: "git-clean" }
+    | { readonly type: "port-closed"; readonly path: string }
+    | { readonly type: "dependency-recovery"; readonly capability: string }
+    | { readonly type: "checkpoint-evidence" }
     | { readonly type: "no-unnecessary-activation" }
 }
 
@@ -20,7 +31,7 @@ export type CaseDefinition = {
   readonly requiredCapabilities?: ReadonlyArray<string>
   readonly expectedProfiles?: Readonly<Record<string, ReadonlyArray<string>>>
   readonly criteria: ReadonlyArray<Criterion>
-  readonly fixture?: "proof-capability" | "empty"
+  readonly fixture?: "proof-capability" | "outcome-capability" | "checkpoint"
 }
 
 export type Suite = {
@@ -69,9 +80,55 @@ export type Comparison = {
 }
 
 export async function loadSuite(file: string): Promise<Suite> {
-  const value = JSON.parse(await fs.readFile(file, "utf8")) as Suite
-  if (value.version !== 1) throw new Error(`Unsupported capability eval suite version: ${value.version}`)
-  if (!Array.isArray(value.cases) || value.cases.length === 0) throw new Error("Capability eval suite has no cases")
+  const strings = z.array(z.string())
+  const verifier = z.discriminatedUnion("type", [
+    z.object({ type: z.literal("artifact"), path: z.string(), contains: z.string().optional() }),
+    z.object({ type: z.literal("tool"), name: z.string(), status: z.enum(["completed", "error"]).optional() }),
+    z.object({ type: z.literal("activation"), capability: z.string(), profiles: strings.optional() }),
+    z.object({ type: z.literal("event"), event: z.string() }),
+    z.object({
+      type: z.literal("binary-artifact"),
+      path: z.string(),
+      prefix: z.string(),
+      minimumBytes: z.number().int().positive(),
+    }),
+    z.object({ type: z.literal("git-clean") }),
+    z.object({ type: z.literal("port-closed"), path: z.string() }),
+    z.object({ type: z.literal("dependency-recovery"), capability: z.string() }),
+    z.object({ type: z.literal("checkpoint-evidence") }),
+    z.object({ type: z.literal("no-unnecessary-activation") }),
+  ])
+  const value = z
+    .object({
+      version: z.literal(1),
+      model: z.object({
+        id: z.string(),
+        quantization: z.string(),
+        serverCommit: z.string(),
+        seed: z.number().int().nullable(),
+        settings: z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()])),
+      }),
+      thresholds: z.object({ minimumCompletionGain: z.number().positive(), maxDefaultCapabilityTools: z.literal(4) }),
+      defaultCapabilityTools: strings,
+      cases: z
+        .array(
+          z.object({
+            id: z.string().regex(/^[a-z0-9-]+$/),
+            version: z.number().int().positive(),
+            description: z.string().optional(),
+            prompt: z.string().optional(),
+            coverage: strings.optional(),
+            requiredCapabilities: strings.optional(),
+            expectedProfiles: z.record(z.string(), strings).optional(),
+            fixture: z.enum(["proof-capability", "outcome-capability", "checkpoint"]).optional(),
+            criteria: z
+              .array(z.object({ id: z.string(), description: z.string(), verifier: verifier.optional() }))
+              .min(1),
+          }),
+        )
+        .min(1),
+    })
+    .parse(JSON.parse(await fs.readFile(file, "utf8")))
   if (new Set(value.cases.map((item) => item.id)).size !== value.cases.length) {
     throw new Error("Capability eval suite case IDs must be unique")
   }
@@ -130,9 +187,9 @@ export function scoreComparison(input: {
   }
 }
 
-export function redact<T>(value: T): T {
-  if (typeof value === "string") return redactText(value) as T
-  if (Array.isArray(value)) return value.map(redact) as T
+export function redact(value: unknown): unknown {
+  if (typeof value === "string") return redactText(value)
+  if (Array.isArray(value)) return value.map(redact)
   if (!value || typeof value !== "object") return value
   return Object.fromEntries(
     Object.entries(value)
@@ -143,16 +200,17 @@ export function redact<T>(value: T): T {
           ),
       )
       .map(([key, item]) => [key, redact(item)]),
-  ) as T
+  )
 }
 
 function redactText(value: string) {
   if (capabilityEventTypes.has(value)) return value
   return value
+    .replace(/\b(?:token|api[_-]?key|client[_-]?secret|password|secret)\s*[=:]\s*[^\s,"']+/gi, "credential=<redacted>")
     .replace(/\bBearer\s+[^\s"']+/gi, "Bearer <redacted>")
     .replace(/https?:\/\/[^\s"')]+/gi, "<redacted-url>")
+    .replace(/(?:\/Users|\/home|\/root|\/private|\/var|\/tmp)\/[^\s"']+/g, "<redacted-path>")
     .replace(/\b(?:[a-z0-9-]+\.)+[a-z]{2,}\b/gi, "<redacted-host>")
-    .replace(/(?:\/Users|\/home|\/root)\/[^\s"']+/g, "<redacted-path>")
     .replace(/\bses_[a-z0-9_-]+\b/gi, "<redacted-session>")
     .replace(/\bsessionID\s*[=:]\s*[^\s,"']+/gi, "sessionID=<redacted>")
 }
