@@ -23,6 +23,16 @@ const MAX_SEARCH_RESULTS = 10
 const PROBE_TIMEOUT = "15 seconds"
 const MAX_PERMISSION_RESOURCES = 32
 const MAX_PERMISSION_RESOURCE_LENGTH = 2_000
+const MAX_PERMISSION_INPUT_NODES = 256
+
+export class PermissionResourceOverflow extends Schema.TaggedErrorClass<PermissionResourceOverflow>()(
+  "CapabilityTool.PermissionResourceOverflow",
+  {},
+) {
+  override get message() {
+    return "Capability permission resources exceed the safe limit"
+  }
+}
 
 const ShortText = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(500))
 const Profiles = Schema.Array(CapabilityManifest.ID).check(Schema.isMinLength(1), Schema.isMaxLength(16))
@@ -189,14 +199,18 @@ const layer = Layer.effectDiscard(
               const profile = pack.profiles[profileID]
               if (!profile) continue
               for (const runtimeID of profile.runtimes) {
-                const key = registrationKey(pack.id, profileID, runtimeID, fingerprint)
+                const runtimeDefinition = pack.runtimes.find((definition) => definition.id === runtimeID)
+                if (!runtimeDefinition) continue
+                const key = registrationKey(pack.id, profileID, runtimeDefinition, fingerprint)
                 const existing = shared.get(key)
                 if (existing) {
                   existing.count++
                   added.push(key)
                   continue
                 }
-                const reference = references.find((item) => item.key === runtimeKey(pack.id, runtimeID))
+                const reference = references.find(
+                  (item) => item.key === runtimeKey(pack.id, runtimeDefinition, fingerprint),
+                )
                 if (!reference?.available || !reference.value) continue
                 const scope = yield* Scope.make()
                 const registered = Object.fromEntries(
@@ -214,10 +228,14 @@ const layer = Layer.effectDiscard(
                             )
                           }
                           const canonical = canonicalResource(runtimeID, definition.name)
+                          const checked = permissionResources(canonical, input)
+                          if (Result.isFailure(checked)) {
+                            return Effect.fail(new ToolFailure({ message: checked.failure.message }))
+                          }
                           return permission
                             .assert({
                               action: definition.name,
-                              resources: permissionResources(canonical, input),
+                              resources: checked.success,
                               save: [canonical],
                               sessionID: context.sessionID,
                               agent: context.agent,
@@ -299,7 +317,7 @@ const layer = Layer.effectDiscard(
         }
         const definitions = selectedRuntimes(pack, profiles)
         const result = yield* runtime.activate(
-          definitions.map((definition) => ({ key: runtimeKey(pack.id, definition.id), definition })),
+          definitions.map((definition) => ({ key: runtimeKey(pack.id, definition, fingerprint), definition })),
         )
         if (result.state === "failed") {
           const output = failedOutput(pack, profiles, dependencies, "failed")
@@ -337,7 +355,9 @@ const layer = Layer.effectDiscard(
         const rules = (yield* agents.resolve(agentID))?.permissions ?? []
         const availableTools = definitions
           .flatMap((definition) => {
-            const reference = result.references.find((item) => item.key === runtimeKey(pack.id, definition.id))
+            const reference = result.references.find(
+              (item) => item.key === runtimeKey(pack.id, definition, fingerprint),
+            )
             return (
               reference?.value?.tools.filter(
                 (tool) =>
@@ -429,8 +449,9 @@ const layer = Layer.effectDiscard(
                     .filter((definition) => !definition.optional)
                     .some(
                       (definition) =>
-                        !current.references.find((reference) => reference.key === runtimeKey(pack.id, definition.id))
-                          ?.available,
+                        !current.references.find(
+                          (reference) => reference.key === runtimeKey(pack.id, definition, fingerprint),
+                        )?.available,
                     )
                   if (!unavailableRequired) return undefined
                 }
@@ -550,8 +571,9 @@ const layer = Layer.effectDiscard(
                   const activation = active.get(pack.id)
                   const dependencies = yield* probe(pack)
                   const profiles = activation ? validProfiles(pack, activation.profiles) : undefined
+                  const fingerprint = manifestFingerprint(pack)
                   const runtimeStatuses = yield* Effect.forEach(selectedRuntimes(pack, profiles ?? []), (definition) =>
-                    runtime.status(runtimeKey(pack.id, definition.id)),
+                    runtime.status(runtimeKey(pack.id, definition, fingerprint)),
                   )
                   const remembered = failures.get(activationKey(context.sessionID, pack.id))
                   const checkedAt = Math.max(
@@ -652,12 +674,18 @@ function activationKey(sessionID: SessionSchema.ID, id: string) {
   return `${sessionID}\u0000${id}`
 }
 
-function runtimeKey(pack: string, runtime: string) {
-  return `${pack}/${runtime}`
+function runtimeKey(pack: string, runtime: CapabilityManifest.Runtime, manifest: string) {
+  const fingerprint = Hash.sha256(JSON.stringify({ manifest, runtime }))
+  return `${pack}/${runtime.id}#${fingerprint}`
 }
 
-function registrationKey(pack: string, profile: string, runtime: string, fingerprint: string) {
-  return `${pack}\u0000${profile}\u0000${runtime}\u0000${fingerprint}`
+function registrationKey(
+  pack: string,
+  profile: string,
+  runtime: CapabilityManifest.Runtime,
+  manifestFingerprint: string,
+) {
+  return `${pack}\u0000${profile}\u0000${runtimeKey(pack, runtime, manifestFingerprint)}`
 }
 
 function sessionFromActivationKey(key: string) {
@@ -692,24 +720,37 @@ function permissionResources(canonical: string, input: unknown) {
   const pending: unknown[] = [input]
   const seen = new WeakSet<object>()
   let visited = 0
-  while (pending.length > 0 && resources.size < MAX_PERMISSION_RESOURCES && visited < 256) {
+  while (pending.length > 0) {
     const value = pending.pop()
     visited++
+    if (visited > MAX_PERMISSION_INPUT_NODES) return Result.fail(new PermissionResourceOverflow())
     if (typeof value === "string") {
-      if (value.length > 0 && value !== "*" && value.length <= MAX_PERMISSION_RESOURCE_LENGTH) resources.add(value)
+      if (value.length === 0 || value === "*") continue
+      if (value.length > MAX_PERMISSION_RESOURCE_LENGTH) return Result.fail(new PermissionResourceOverflow())
+      if (!resources.has(value) && resources.size >= MAX_PERMISSION_RESOURCES) {
+        return Result.fail(new PermissionResourceOverflow())
+      }
+      resources.add(value)
       continue
     }
     if (Array.isArray(value)) {
       if (seen.has(value)) continue
       seen.add(value)
+      if (visited + pending.length + value.length > MAX_PERMISSION_INPUT_NODES) {
+        return Result.fail(new PermissionResourceOverflow())
+      }
       pending.push(...value.toReversed())
       continue
     }
     if (!value || typeof value !== "object" || seen.has(value)) continue
     seen.add(value)
-    pending.push(...Object.values(value).toReversed())
+    const values = Object.values(value)
+    if (visited + pending.length + values.length > MAX_PERMISSION_INPUT_NODES) {
+      return Result.fail(new PermissionResourceOverflow())
+    }
+    pending.push(...values.toReversed())
   }
-  return [...resources].slice(0, MAX_PERMISSION_RESOURCES)
+  return Result.succeed([...resources])
 }
 
 function distinct<T>(value: T, index: number, values: ReadonlyArray<T>) {

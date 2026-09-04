@@ -80,7 +80,9 @@ let runtimeCalls = 0
 let denyRuntime = false
 let deniedResource: string | undefined
 let probeExitCode = 0
-let runtimeReferences: ReadonlyArray<CapabilityRuntime.Reference>
+let runtimeReferences:
+  | ((definitions: ReadonlyArray<CapabilityRuntime.ActivationInput>) => ReadonlyArray<CapabilityRuntime.Reference>)
+  | undefined
 let agentPermissions: PermissionV2.Ruleset = []
 let permissionRequests: PermissionV2.AssertInput[] = []
 let deletedSessions = new Set<SessionV2.ID>()
@@ -133,39 +135,55 @@ const state = CapabilityState.Service.of({
   status: (id) => Effect.succeed(activations.get(id) ?? []),
 })
 
-const reference = {
-  key: "browser/playwright",
-  available: true,
-  value: {
-    tools: [
-      {
-        name: "browser_playwright_navigate",
-        description: "Navigate to a page",
-        inputSchema: {
-          type: "object",
-          properties: { url: { type: "string" } },
-          required: ["url"],
-          additionalProperties: false,
+const makeReference = (key: string, runtimeName = "playwright") =>
+  ({
+    key,
+    available: true,
+    value: {
+      tools: [
+        {
+          name: "browser_playwright_navigate",
+          description: "Navigate to a page",
+          inputSchema: {
+            type: "object",
+            properties: { url: { type: "string" } },
+            required: ["url"],
+            additionalProperties: false,
+          },
+          call: (input: unknown) =>
+            Effect.sync(() => {
+              runtimeCalls++
+              return { runtime: runtimeName, navigated: input }
+            }),
         },
-        call: (input: unknown) =>
-          Effect.sync(() => {
-            runtimeCalls++
-            return { navigated: input }
-          }),
-      },
-    ],
-  },
-} as unknown as CapabilityRuntime.Reference
+      ],
+    },
+  }) as unknown as CapabilityRuntime.Reference
+
+const reference = makeReference("browser/playwright")
+
+const activatedKeys: string[] = []
+const releasedKeys: string[] = []
 
 const runtime = CapabilityRuntime.Service.of({
-  acquire: () => Effect.succeed(reference),
-  release: () => Effect.sync(() => events.push("runtime:release")),
-  activate: () =>
+  acquire: (key, definition) => Effect.succeed(makeReference(key, definition.command[0])),
+  release: (released) =>
+    Effect.sync(() => {
+      events.push("runtime:release")
+      releasedKeys.push(released.key)
+    }),
+  activate: (definitions) =>
     Effect.sync(() => {
       events.push("runtime:activate")
+      activatedKeys.push(...definitions.map((definition) => definition.key))
       return runtimeFailure
         ? ({ state: "failed", references: [], diagnostic: "startup failed" } as const)
-        : ({ state: "active", references: runtimeReferences } as const)
+        : ({
+            state: "active",
+            references:
+              runtimeReferences?.(definitions) ??
+              definitions.map(({ key, definition }) => makeReference(key, definition.command[0] ?? definition.id)),
+          } as const)
     }),
   status: () =>
     Effect.succeed({
@@ -247,7 +265,9 @@ const reset = () => {
   denyRuntime = false
   deniedResource = undefined
   probeExitCode = 0
-  runtimeReferences = [reference]
+  runtimeReferences = undefined
+  activatedKeys.length = 0
+  releasedKeys.length = 0
   agentPermissions = []
   permissionRequests = []
   deletedSessions = new Set()
@@ -262,6 +282,13 @@ const call = (name: string, input: unknown) =>
     sessionID,
     ...identity,
     call: { type: "tool-call", id: `call-${name}`, name, input },
+  })
+
+const callForSession = (currentSessionID: SessionV2.ID, name: string, input: unknown) =>
+  executeTool(yieldRegistry, {
+    sessionID: currentSessionID,
+    ...identity,
+    call: { type: "tool-call", id: `call-${currentSessionID}-${name}`, name, input },
   })
 
 let yieldRegistry: ToolRegistry.Interface
@@ -420,7 +447,10 @@ describe("CapabilityTool", () => {
           ],
         },
       } as unknown as CapabilityRuntime.Reference
-      runtimeReferences = [reference, invalidReference]
+      runtimeReferences = (definitions) => [
+        makeReference(definitions[0]!.key),
+        { ...invalidReference, key: definitions[1]!.key } as unknown as CapabilityRuntime.Reference,
+      ]
       yieldRegistry = yield* ToolRegistry.Service
 
       expect(yield* call("capability_enable", { id: "browser", profiles: ["default"] })).toMatchObject({
@@ -524,6 +554,47 @@ describe("CapabilityTool", () => {
         expect(events).toContain("runtime:release")
         expect(events).toContain("runtime:activate")
       }),
+  )
+
+  it.effect("keeps changed runtime and registration identities separate while another session holds the old pack", () =>
+    Effect.gen(function* () {
+      reset()
+      yieldRegistry = yield* ToolRegistry.Service
+      const sessionB = SessionV2.ID.make("ses_capability_tool_b")
+      yield* callForSession(sessionB, "capability_enable", { id: "browser", profiles: ["default"] })
+      const oldKey = activatedKeys.at(-1)!
+      events.length = 0
+
+      catalogPacks = [
+        {
+          ...pack(0),
+          runtimes: pack(0).runtimes.map((definition) =>
+            CapabilityManifest.Runtime.make({ ...definition, command: ["changed-runtime"] }),
+          ),
+        },
+      ]
+      yield* callForSession(sessionID, "capability_enable", { id: "browser", profiles: ["default"] })
+      const newKey = activatedKeys.at(-1)!
+
+      expect(newKey).not.toBe(oldKey)
+      expect(releasedKeys).not.toContain(oldKey)
+      const current = yield* yieldRegistry.materialize(sessionID)
+      expect(
+        yield* current.settle({
+          sessionID,
+          ...identity,
+          call: {
+            type: "tool-call",
+            id: "call-new-runtime",
+            name: "browser_playwright_navigate",
+            input: { url: "https://example.com" },
+          },
+        }),
+      ).toMatchObject({ result: { type: "json", value: { runtime: "changed-runtime" } } })
+
+      yield* yieldRegistry.materialize(sessionB)
+      expect(releasedKeys).toContain(oldKey)
+    }),
   )
 
   it.effect("releases held references for cascade-deleted sessions on any later prepare", () =>
@@ -651,6 +722,70 @@ describe("CapabilityTool", () => {
         resources: ["mcp:playwright:browser_playwright_navigate", deniedResource, "/tmp/file"],
         save: ["mcp:playwright:browser_playwright_navigate"],
       })
+      expect(runtimeCalls).toBe(0)
+    }),
+  )
+
+  it.effect("fails closed when a denied target appears after the permission resource limit", () =>
+    Effect.gen(function* () {
+      reset()
+      yieldRegistry = yield* ToolRegistry.Service
+      yield* call("capability_enable", { id: "browser", profiles: ["default"] })
+      permissionRequests = []
+      const input: Record<string, string> = {}
+      for (let index = 0; index < 31; index++) input[`filler${index}`] = `resource-${index}`
+      deniedResource = "https://example.com/denied-after-limit"
+      input.target = deniedResource
+
+      expect(
+        yield* (yield* yieldRegistry.materialize(sessionID)).settle({
+          sessionID,
+          ...identity,
+          call: {
+            type: "tool-call",
+            id: "call-resource-overflow",
+            name: "browser_playwright_navigate",
+            input,
+          },
+        }),
+      ).toMatchObject({
+        result: { type: "error", value: "Capability permission resources exceed the safe limit" },
+      })
+      expect(permissionRequests).toHaveLength(0)
+      expect(runtimeCalls).toBe(0)
+    }),
+  )
+
+  it.effect("bounds cyclic and excessively deep untrusted permission input", () =>
+    Effect.gen(function* () {
+      reset()
+      yieldRegistry = yield* ToolRegistry.Service
+      yield* call("capability_enable", { id: "browser", profiles: ["default"] })
+      permissionRequests = []
+      const input: { next?: unknown } = {}
+      let cursor = input
+      for (let index = 0; index < 257; index++) {
+        const next: { next?: unknown } = {}
+        cursor.next = next
+        cursor = next
+      }
+      cursor.next = input
+
+      expect(
+        yield* (yield* yieldRegistry.materialize(sessionID)).settle({
+          sessionID,
+          ...identity,
+          call: {
+            type: "tool-call",
+            id: "call-node-overflow",
+            name: "browser_playwright_navigate",
+            input,
+          },
+        }),
+      ).toMatchObject({
+        result: { type: "error", value: "Capability permission resources exceed the safe limit" },
+      })
+      expect(permissionRequests).toHaveLength(0)
       expect(runtimeCalls).toBe(0)
     }),
   )

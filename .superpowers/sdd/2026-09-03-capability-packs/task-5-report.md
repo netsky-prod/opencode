@@ -103,3 +103,36 @@ Targeted lint completed with 0 errors. Its warnings were existing style findings
 ### Review-Fix Concerns
 
 - Deleted-Session cleanup is intentionally prepare-driven because Core has no Location-scoped Session deletion subscription. It is bounded by the held Session set and also runs under the existing Location finalizer.
+
+## Review Fix Round 2
+
+### Findings Addressed
+
+1. Permission-resource extraction now fails closed with the typed `CapabilityTool.PermissionResourceOverflow` condition when the canonical resource plus distinct input leaves would exceed 32 resources, an individual resource exceeds its length bound, or traversal would exceed 256 nodes. The runtime tool converts that condition to `ToolFailure` before invoking permission handling or the runtime. Cycles are tracked by identity and cannot cause unbounded traversal.
+2. Capability runtime keys now include a hash of both the current manifest fingerprint and the selected runtime definition. Shared registration keys include that fingerprinted runtime key as well. A changed manifest can therefore start and register alongside an old runtime still referenced by another Session; the old reference is released only when its owning Session reconciles or the Location closes. The OpenCode adapter parses the runtime ID separately from the fingerprint while retaining direct legacy-key compatibility.
+
+### Review RED Evidence
+
+- With 31 distinct filler leaves after the canonical resource, a denied target in the next input field was silently omitted and the runtime executed.
+- A cyclic chain exceeding 256 nodes reached the runtime and later failed during unrelated output serialization instead of failing at the permission boundary.
+- Two Sessions enabling old and changed definitions received the same `browser/playwright` runtime key, preventing the real runtime service from starting the new definition while the old Session retained a reference.
+
+### Review GREEN Evidence
+
+From `packages/core`:
+
+```text
+bun test test/tool-capability.test.ts test/system-context/builtins.test.ts test/location-layer.test.ts test/capability/materialization.test.ts test/application-tools.test.ts test/permission.test.ts && bun typecheck
+56 pass, 0 fail
+tsgo --noEmit: exit 0
+```
+
+The combined OpenCode callsite run completed with 130 passed, 1 intentional skip, and one timeout in `applies plugin shell environment before forced PTY values`. Per the task brief, the PTY suite was rerun in isolation:
+
+```text
+bun test --timeout 10000 test/server/httpapi-v2-pty.test.ts && bun typecheck
+4 pass, 0 fail
+tsgo --noEmit: exit 0
+```
+
+The isolated test completed in 503.62 ms. Targeted lint completed with 0 errors, and `git diff --check` passed before commit.

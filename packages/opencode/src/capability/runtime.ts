@@ -151,7 +151,12 @@ function runtimeID(key: string) {
   if (index <= 0 || index === key.length - 1 || key.indexOf("/", index + 1) !== -1) {
     throw new Error(`Invalid capability runtime key: ${key}`)
   }
-  return key.slice(index + 1)
+  const fingerprint = key.indexOf("#", index + 1)
+  if (fingerprint === -1) return key.slice(index + 1)
+  if (fingerprint === index + 1 || fingerprint === key.length - 1 || key.indexOf("#", fingerprint + 1) !== -1) {
+    throw new Error(`Invalid capability runtime key: ${key}`)
+  }
+  return key.slice(index + 1, fingerprint)
 }
 
 function waitForExit(mcp: MCP.Interface, registration: MCP.Registration): Effect.Effect<void> {
