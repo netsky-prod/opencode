@@ -17,7 +17,7 @@ concurrency:
 
 jobs:
   cli:
-    if: github.repository == 'netsky-prod/opencode' || github.repository == 'netsky-prod/netsky-code'
+    if: github.repository == 'netsky-prod/netsky-code'
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}

@@ -7,7 +7,7 @@ import { useSettings } from "@/context/settings"
 import { persisted } from "@/utils/persist"
 import { DialogReleaseNotes, type Highlight } from "@/components/dialog-release-notes"
 
-const CHANGELOG_URL = "https://raw.githubusercontent.com/netsky-prod/opencode/dev/docs/changelog.json"
+const CHANGELOG_URL = "https://raw.githubusercontent.com/netsky-prod/netsky-code/dev/docs/changelog.json"
 
 type Store = {
   version?: string

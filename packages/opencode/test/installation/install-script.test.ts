@@ -98,14 +98,14 @@ esac
     expect(mode).toBe("700")
     expect(Array.from(new Bun.Glob("netsky-install.*").scanSync({ cwd: privateTmp }))).toEqual([])
     expect(await Bun.file(curlLog).text()).toContain(
-      "https://api.github.com/repos/netsky-prod/opencode/releases/latest",
+      "https://api.github.com/repos/netsky-prod/netsky-code/releases/latest",
     )
     expect(await Bun.file(curlLog).text()).not.toContain("/releases?per_page=1")
     expect(await Bun.file(curlLog).text()).toContain(
-      "https://github.com/netsky-prod/opencode/releases/download/v0.1.0/netsky-linux-arm64.tar.gz",
+      "https://github.com/netsky-prod/netsky-code/releases/download/v0.1.0/netsky-linux-arm64.tar.gz",
     )
     expect(await Bun.file(curlLog).text()).toContain(
-      "https://github.com/netsky-prod/opencode/releases/download/v0.1.0/SHA256SUMS",
+      "https://github.com/netsky-prod/netsky-code/releases/download/v0.1.0/SHA256SUMS",
     )
   })
 
@@ -173,7 +173,7 @@ esac
     expect((await $`${installed}`.text()).trim()).toBe("existing")
     expect(Array.from(new Bun.Glob("netsky-install.*").scanSync({ cwd: privateTmp }))).toEqual([])
     expect(await Bun.file(path.join(dir.path, "curl.log")).text()).toContain(
-      "https://github.com/netsky-prod/opencode/releases/download/v0.2.0-rc.1/netsky-linux-arm64.tar.gz",
+      "https://github.com/netsky-prod/netsky-code/releases/download/v0.2.0-rc.1/netsky-linux-arm64.tar.gz",
     )
   })
 })

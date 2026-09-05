@@ -5,7 +5,7 @@ Netsky Code ships unsigned CLI binaries for macOS arm64/x64 and glibc Linux arm6
 ## Install or upgrade
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/netsky-prod/opencode/dev/install | bash
+curl -fsSL https://raw.githubusercontent.com/netsky-prod/netsky-code/dev/install | bash
 netsky --version
 netsky
 ```
@@ -14,9 +14,21 @@ The default executable is `~/.netsky/bin/netsky`. Open a new terminal if its PAT
 
 The binaries are unsigned. On macOS, approve the exact binary in System Settings → Privacy & Security if Gatekeeper blocks it. Do not disable Gatekeeper system-wide.
 
+## Migrating development history
+
+Stable builds use `opencode.db`, while development channels use `opencode-<channel>.db` in the same existing data directory. A previous `local` build therefore has a different session list from a stable build, even though both histories remain intact. Continue the previous local database explicitly:
+
+```sh
+OPENCODE_DB=opencode-local.db netsky -c
+```
+
+The relative override resolves inside the existing OpenCode data directory. Keep this environment setting on subsequent launches when you want that history, or put a Netsky-only wrapper in your shell configuration. An absolute database path is also supported. Do not overwrite or merge databases just to change the executable name.
+
+The repository is now `netsky-prod/netsky-code`. The initial 0.1.0 binaries were built before the repository rename; their old repository addresses remain functional through GitHub's redirect/alias behavior, verified after the rename. Current source and installation instructions use the new address. Published artifacts are not silently rebuilt under the same version.
+
 ## Verify a release manually
 
-Download the platform archive plus `SHA256SUMS` from the same [release](https://github.com/netsky-prod/opencode/releases). In the directory containing those downloads, verify the matching file:
+Download the platform archive plus `SHA256SUMS` from the same [release](https://github.com/netsky-prod/netsky-code/releases). In the directory containing those downloads, verify the matching file:
 
 ```sh
 # Example: Apple Silicon
@@ -60,10 +72,10 @@ Also run affected Core/TUI/App tests and typechecks, a native keyboard-driven ma
 Run against the Netsky repository explicitly: `gh` can otherwise infer the upstream repository for a fork.
 
 ```sh
-gh workflow run fork-release.yml --repo netsky-prod/opencode --ref dev -f version=0.1.0
-gh run list --repo netsky-prod/opencode --workflow fork-release.yml
-gh run watch RUN_ID --repo netsky-prod/opencode
-gh release view v0.1.0 --repo netsky-prod/opencode
+gh workflow run fork-release.yml --repo netsky-prod/netsky-code --ref dev -f version=0.1.0
+gh run list --repo netsky-prod/netsky-code --workflow fork-release.yml
+gh run watch RUN_ID --repo netsky-prod/netsky-code
+gh release view v0.1.0 --repo netsky-prod/netsky-code
 ```
 
 The manual workflow creates a draft, builds only the four supported targets, packages them through `script/netsky-release.ts`, verifies checksums and the Linux executable, uploads all required files, checks the uploaded asset list, then publishes. Stable versions become stable releases; versions with a prerelease suffix remain prereleases. Do not reuse a published version.

@@ -1,5 +1,7 @@
 # Netsky Code distribution report
 
+This is the distribution worker's handoff snapshot. Subsequent integration resolved the gaps below, published 0.1.0, and renamed the repository to `netsky-prod/netsky-code`; see the [final verification report](../../releases/0.1.0-verification.md). Historical URLs below record the state at handoff.
+
 ## Implemented
 
 - Public product metadata identifies Netsky Code `0.1.0`; the package launcher, native executable, build directories, and archives use `netsky` / `netsky-<platform>`.

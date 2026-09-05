@@ -1,7 +1,7 @@
 <p align="center"><img src="docs/assets/netsky-code.svg" width="520" alt="Netsky Code"></p>
 
 <p align="center">Открытый агентный харнес для разработки, исследований и выполнения задач.</p>
-<p align="center"><a href="README.md">English</a> · <a href="https://github.com/netsky-prod/opencode/releases">Релизы</a> · <a href="docs/capabilities.md">Capabilities</a> · <a href="docs/loop.md">Loops</a></p>
+<p align="center"><a href="README.md">English</a> · <a href="https://github.com/netsky-prod/netsky-code/releases">Релизы</a> · <a href="docs/capabilities.md">Capabilities</a> · <a href="docs/loop.md">Loops</a></p>
 
 Netsky Code — самостоятельный проект на базе [OpenCode](https://github.com/anomalyco/opencode). Мы сохраняем терминальный интерфейс, выбор моделей, инструменты, скиллы и совместимость с MCP, развивая управление возможностями агента и продолжением работы.
 
@@ -10,7 +10,7 @@ Netsky Code — самостоятельный проект на базе [OpenC
 ## Установка
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/netsky-prod/opencode/dev/install | bash
+curl -fsSL https://raw.githubusercontent.com/netsky-prod/netsky-code/dev/install | bash
 netsky --version
 netsky
 ```
@@ -51,14 +51,16 @@ netsky
 
 ## Переход с нашего форка OpenCode
 
-Запускай `netsky` вместо `opencode`. В 0.1.0 сохраняется совместимость с прежними путями конфигурации и данных: `~/.config/opencode`, папками проекта `.opencode` и существующей историей сессий. Новое название не создаёт пустой профиль.
+Запускай `netsky` вместо `opencode`. В 0.1.0 сохраняется совместимость с прежними путями конфигурации и данных: `~/.config/opencode`, папками проекта `.opencode` и существующей историей сессий.
+
+У каналов разработки отдельные базы сессий. Если раньше использовалась наша сборка `local`, продолжай её историю командой `OPENCODE_DB=opencode-local.db netsky -c`. Стабильная сборка по умолчанию использует `opencode.db`; установщик не удаляет и не объединяет эти базы. Подробнее — в [инструкции по переходу](docs/fork-release.md#migrating-development-history).
 
 Существующие MCP остаются настроенными. Перевод подключения в режим только через пак — отдельное явное действие. Ключи остаются в конфигурации или источнике секретов, а не копируются в распространяемые манифесты паков. Внутренние имена пакетов `@opencode-ai/*` и переменных `OPENCODE_*` пока сохранены ради совместимости.
 
 ## Сборка
 
 ```sh
-git clone https://github.com/netsky-prod/opencode.git netsky-code
+git clone https://github.com/netsky-prod/netsky-code.git netsky-code
 cd netsky-code
 bun install --frozen-lockfile
 cd packages/opencode
@@ -74,7 +76,7 @@ OPENCODE_CHANNEL=local bun run build --single --skip-install
 - [Durable loops](docs/loop.md)
 - [Установка и выпуск релизов](docs/fork-release.md)
 - [Участие в разработке](CONTRIBUTING.md)
-- [Сообщить о проблеме](https://github.com/netsky-prod/opencode/issues)
+- [Сообщить о проблеме](https://github.com/netsky-prod/netsky-code/issues)
 
 Поддерживаемые README — английский и русский. Остальные языковые страницы ведут на них, чтобы не предлагать установку чужих релизов.
 

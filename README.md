@@ -1,7 +1,7 @@
 <p align="center"><img src="docs/assets/netsky-code.svg" width="520" alt="Netsky Code"></p>
 
 <p align="center">An open-source agent harness for building, researching, and getting work done.</p>
-<p align="center"><a href="README.ru.md">Русский</a> · <a href="https://github.com/netsky-prod/opencode/releases">Releases</a> · <a href="docs/capabilities.md">Capabilities</a> · <a href="docs/loop.md">Loops</a></p>
+<p align="center"><a href="README.ru.md">Русский</a> · <a href="https://github.com/netsky-prod/netsky-code/releases">Releases</a> · <a href="docs/capabilities.md">Capabilities</a> · <a href="docs/loop.md">Loops</a></p>
 
 Netsky Code is an independently maintained harness built on [OpenCode](https://github.com/anomalyco/opencode). It keeps the terminal-first workflow, model choice, tools, skills, and MCP ecosystem, and adds session-scoped capability packs and durable continuation.
 
@@ -10,7 +10,7 @@ Netsky Code is an independently maintained harness built on [OpenCode](https://g
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/netsky-prod/opencode/dev/install | bash
+curl -fsSL https://raw.githubusercontent.com/netsky-prod/netsky-code/dev/install | bash
 netsky --version
 netsky
 ```
@@ -51,14 +51,16 @@ The scheduler needs a running Netsky Code process. Closing every process pauses 
 
 ## Migrating from our OpenCode fork
 
-Launch with `netsky` instead of `opencode`. Existing OpenCode-compatible configuration and data paths remain supported in 0.1.0, including `~/.config/opencode`, project `.opencode` directories, and existing session storage. This is intentional compatibility, not a second empty profile.
+Launch with `netsky` instead of `opencode`. Existing OpenCode-compatible configuration and data paths remain supported in 0.1.0, including `~/.config/opencode`, project `.opencode` directories, and existing session storage.
+
+Development channels use separate session databases. If you used our previous `local` build, continue that history explicitly with `OPENCODE_DB=opencode-local.db netsky -c`. Stable builds otherwise use `opencode.db`; neither database is deleted or merged by the installer. See the [migration notes](docs/fork-release.md#migrating-development-history).
 
 Existing MCPs remain configured; moving one into pack-only activation is an explicit operation in the manager. Keep credentials in their existing config/secret source, not in shareable pack manifests. Internal `@opencode-ai/*` packages and `OPENCODE_*` variables retain their names for compatibility.
 
 ## Build from source
 
 ```sh
-git clone https://github.com/netsky-prod/opencode.git netsky-code
+git clone https://github.com/netsky-prod/netsky-code.git netsky-code
 cd netsky-code
 bun install --frozen-lockfile
 cd packages/opencode
@@ -74,7 +76,7 @@ Use the Bun version declared in [package.json](package.json) and the matching pl
 - [Durable loops](docs/loop.md)
 - [Installation and release runbook](docs/fork-release.md)
 - [Contributing](CONTRIBUTING.md)
-- [Report an issue](https://github.com/netsky-prod/opencode/issues)
+- [Report an issue](https://github.com/netsky-prod/netsky-code/issues)
 
 English and Russian are the maintained Netsky README versions. The other README entry points link here rather than advertising unrelated upstream releases.
 

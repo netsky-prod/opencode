@@ -7,7 +7,7 @@ describe("fork release workflow", () => {
       path.resolve(import.meta.dir, "../../../../.github/workflows/fork-release.yml"),
     ).text()
     expect(workflow).toContain("workflow_dispatch:")
-    expect(workflow).toContain("github.repository == 'netsky-prod/opencode'")
+    expect(workflow).toContain("github.repository == 'netsky-prod/netsky-code'")
     expect(workflow).toContain("OPENCODE_VERSION:")
     expect(workflow).toContain("gh release upload")
     for (const asset of [

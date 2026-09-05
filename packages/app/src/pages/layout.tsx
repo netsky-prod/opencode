@@ -2238,7 +2238,7 @@ export default function LegacyLayout(props: ParentProps) {
       settingsKeybind={() => command.keybind("settings.open")}
       onOpenSettings={openSettings}
       helpLabel={() => language.t("sidebar.help")}
-      onOpenHelp={() => platform.openExternal("https://github.com/netsky-prod/opencode/issues")}
+      onOpenHelp={() => platform.openExternal("https://github.com/netsky-prod/netsky-code/issues")}
       renderPanel={() =>
         mobile ? <SidebarPanel project={currentProject} mobile /> : <SidebarPanel project={currentProject} merged />
       }

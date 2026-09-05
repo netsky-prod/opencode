@@ -84,8 +84,8 @@ describe("installation", () => {
       forkCalls.length = 0
       expect(yield* Installation.use.latest("curl")).toBe("1.18.25-loop.1")
       yield* Installation.use.upgrade("curl", "1.18.25-loop.1")
-      expect(forkCalls).toContain("https://api.github.com/repos/netsky-prod/opencode/releases/latest")
-      expect(forkCalls).toContain("https://raw.githubusercontent.com/netsky-prod/opencode/dev/install")
+      expect(forkCalls).toContain("https://api.github.com/repos/netsky-prod/netsky-code/releases/latest")
+      expect(forkCalls).toContain("https://raw.githubusercontent.com/netsky-prod/netsky-code/dev/install")
       expect(forkCalls.some((url) => url.includes("anomalyco/opencode"))).toBe(false)
     }),
   )
@@ -119,7 +119,7 @@ describe("installation", () => {
       Effect.gen(function* () {
         const result = yield* Installation.use.latest("npm")
         expect(result).toBe("0.1.0")
-        expect(npmCalls).toEqual(["https://api.github.com/repos/netsky-prod/opencode/releases/latest"])
+        expect(npmCalls).toEqual(["https://api.github.com/repos/netsky-prod/netsky-code/releases/latest"])
       }),
     )
   })

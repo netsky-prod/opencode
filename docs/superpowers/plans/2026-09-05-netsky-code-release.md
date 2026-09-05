@@ -78,9 +78,10 @@ Files: root README languages, `docs/capabilities.md`, `docs/fork-release.md`, `d
 
 ## Task 5: Acceptance and publication
 
-- [ ] Review combined diffs and run package typechecks and broad regression suites; record known unrelated failures precisely rather than silently waiving them.
-- [ ] Build native release and test `netsky --version`, help, restored config/history, `/capabilities`, local/remote MCP call and real Qwen task.
-- [ ] Back up current installed binary and install verified `netsky` with reachable PATH.
-- [ ] Commit, push the user fork, trigger release workflow, and wait for artifacts/checksums before stable publication.
-- [ ] Download published host archive through the documented installer in an isolated prefix; verify version and checksum.
-- [ ] Report release URL, install command, compatibility notes and actual verification results.
+- [x] Review combined diffs and run package typechecks and broad regression suites; record known unrelated failures precisely rather than silently waiving them.
+- [x] Build native release and test `netsky --version`, help, restored config/history, `/capabilities`, local/remote MCP call and real Qwen task.
+- [x] Preserve the previous executable in place, back up shell configuration, and install verified `netsky` alongside it with reachable PATH and the same local-channel history.
+- [x] Commit, push the user fork, trigger release workflow, and wait for artifacts/checksums before stable publication.
+- [x] Download the published host archive through the documented installer into the separate `~/.netsky` prefix; verify version and checksum. Isolated installer fixtures cover failure paths and preservation.
+- [x] Publish release URL, install command, compatibility notes and actual verification results in the release notes and verification report.
+- [x] Rename the repository to `netsky-prod/netsky-code`, update current source/remotes, and verify the original published binary's release-source addresses still resolve.

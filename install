@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 APP=netsky
-REPOSITORY=netsky-prod/opencode
-# Netsky Code releases: https://github.com/netsky-prod/opencode/releases
+REPOSITORY=netsky-prod/netsky-code
+# Netsky Code releases: https://github.com/netsky-prod/netsky-code/releases
 
 MUTED='\033[0;2m'
 RED='\033[0;31m'
@@ -22,8 +22,8 @@ Options:
         --no-modify-path    Don't modify shell config files (.zshrc, .bashrc, etc.)
 
 Examples:
-    curl -fsSL https://raw.githubusercontent.com/netsky-prod/opencode/dev/install | bash
-    curl -fsSL https://raw.githubusercontent.com/netsky-prod/opencode/dev/install | bash -s -- --version 0.1.0
+    curl -fsSL https://raw.githubusercontent.com/netsky-prod/netsky-code/dev/install | bash
+    curl -fsSL https://raw.githubusercontent.com/netsky-prod/netsky-code/dev/install | bash -s -- --version 0.1.0
     ./install --binary /path/to/netsky
 EOF
 }
