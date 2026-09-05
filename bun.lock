@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "opencode",
+      "name": "netsky-code",
       "dependencies": {
         "@aws-sdk/client-s3": "3.933.0",
         "@opencode-ai/plugin": "workspace:*",
@@ -562,7 +562,7 @@
       "name": "opencode",
       "version": "1.18.25",
       "bin": {
-        "opencode": "./bin/opencode",
+        "netsky": "./bin/netsky",
       },
       "dependencies": {
         "@actions/core": "1.11.1",

@@ -2,9 +2,11 @@ import yargs from "yargs"
 import { TuiThreadCommand } from "./cli/cmd/tui"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import { hideBin } from "yargs/helpers"
+import { commandName, productName } from "./distribution"
 const cli = yargs(hideBin(process.argv))
   .parserConfiguration({ "populate--": true })
-  .scriptName("opencode")
+  .scriptName(commandName)
+  .usage(`${productName}\n\n$0 [command]`)
   .wrap(100)
   .help("help", "show help")
   .alias("help", "h")

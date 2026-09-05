@@ -2,16 +2,12 @@ import type { Argv } from "yargs"
 import { UI } from "../ui"
 import * as prompts from "@clack/prompts"
 import { Installation } from "../../installation"
-import { Global } from "@opencode-ai/core/global"
 import fs from "fs/promises"
 import path from "path"
 import os from "os"
 import { Filesystem } from "@/util/filesystem"
-import { Process } from "@/util/process"
 
 interface UninstallArgs {
-  keepConfig: boolean
-  keepData: boolean
   dryRun: boolean
   force: boolean
 }
@@ -24,21 +20,9 @@ interface RemovalTargets {
 
 export const UninstallCommand = {
   command: "uninstall",
-  describe: "uninstall opencode and remove all related files",
+  describe: "uninstall Netsky Code while preserving compatible OpenCode data",
   builder: (yargs: Argv) =>
     yargs
-      .option("keep-config", {
-        alias: "c",
-        type: "boolean",
-        describe: "keep configuration files",
-        default: false,
-      })
-      .option("keep-data", {
-        alias: "d",
-        type: "boolean",
-        describe: "keep session data and snapshots",
-        default: false,
-      })
       .option("dry-run", {
         type: "boolean",
         describe: "show what would be removed without removing",
@@ -55,7 +39,7 @@ export const UninstallCommand = {
     UI.empty()
     UI.println(UI.logo("  "))
     UI.empty()
-    prompts.intro("Uninstall OpenCode")
+    prompts.intro("Uninstall Netsky Code")
 
     const method = await Installation.method()
     prompts.log.info(`Installation method: ${method}`)
@@ -87,18 +71,14 @@ export const UninstallCommand = {
   },
 }
 
-async function collectRemovalTargets(args: UninstallArgs, method: Installation.Method): Promise<RemovalTargets> {
-  const directories: RemovalTargets["directories"] = [
-    { path: Global.Path.data, label: "Data", keep: args.keepData },
-    { path: Global.Path.cache, label: "Cache", keep: false },
-    { path: Global.Path.config, label: "Config", keep: args.keepConfig },
-    { path: Global.Path.state, label: "State", keep: false },
-  ]
-
+export async function collectRemovalTargets(
+  _args: UninstallArgs,
+  method: Installation.Method,
+): Promise<RemovalTargets> {
   const shellConfig = method === "curl" ? await getShellConfigFile() : null
   const binary = method === "curl" ? process.execPath : null
 
-  return { directories, shellConfig, binary }
+  return { directories: [], shellConfig, binary }
 }
 
 async function showRemovalSummary(targets: RemovalTargets, method: Installation.Method) {
@@ -125,19 +105,6 @@ async function showRemovalSummary(targets: RemovalTargets, method: Installation.
 
   if (targets.shellConfig) {
     prompts.log.info(`  ✓ Shell PATH in ${shortenPath(targets.shellConfig)}`)
-  }
-
-  if (method !== "curl" && method !== "unknown") {
-    const cmds: Record<string, string> = {
-      npm: "npm uninstall -g opencode-ai",
-      pnpm: "pnpm uninstall -g opencode-ai",
-      bun: "bun remove -g opencode-ai",
-      yarn: "yarn global remove opencode-ai",
-      brew: "brew uninstall opencode",
-      choco: "choco uninstall opencode",
-      scoop: "scoop uninstall opencode",
-    }
-    prompts.log.info(`  ✓ Package: ${cmds[method] || method}`)
   }
 }
 
@@ -178,44 +145,13 @@ async function executeUninstall(method: Installation.Method, targets: RemovalTar
     }
   }
 
-  if (method !== "curl" && method !== "unknown") {
-    const cmds: Record<string, string[]> = {
-      npm: ["npm", "uninstall", "-g", "opencode-ai"],
-      pnpm: ["pnpm", "uninstall", "-g", "opencode-ai"],
-      bun: ["bun", "remove", "-g", "opencode-ai"],
-      yarn: ["yarn", "global", "remove", "opencode-ai"],
-      brew: ["brew", "uninstall", "opencode"],
-      choco: ["choco", "uninstall", "opencode"],
-      scoop: ["scoop", "uninstall", "opencode"],
-    }
-
-    const cmd = cmds[method]
-    if (cmd) {
-      spinner.start(`Running ${cmd.join(" ")}...`)
-      const result = await Process.run(method === "choco" ? ["choco", "uninstall", "opencode", "-y", "-r"] : cmd, {
-        nothrow: true,
-      })
-      if (result.code !== 0) {
-        spinner.stop(`Package manager uninstall failed: exit code ${result.code}`, 1)
-        const text = `${result.stdout.toString("utf8")}\n${result.stderr.toString("utf8")}`
-        if (method === "choco" && text.includes("not running from an elevated command shell")) {
-          prompts.log.warn(`You may need to run '${cmd.join(" ")}' from an elevated command shell`)
-        } else {
-          prompts.log.warn(`You may need to run manually: ${cmd.join(" ")}`)
-        }
-      } else {
-        spinner.stop("Package removed")
-      }
-    }
-  }
-
   if (method === "curl" && targets.binary) {
     UI.empty()
     prompts.log.message("To finish removing the binary, run:")
     prompts.log.info(`  rm "${targets.binary}"`)
 
     const binDir = path.dirname(targets.binary)
-    if (binDir.includes(".opencode")) {
+    if (binDir.includes(".netsky")) {
       prompts.log.info(`  rmdir "${binDir}" 2>/dev/null`)
     }
   }
@@ -229,7 +165,7 @@ async function executeUninstall(method: Installation.Method, targets: RemovalTar
   }
 
   UI.empty()
-  prompts.log.success("Thank you for using OpenCode!")
+  prompts.log.success("Thank you for using Netsky Code!")
 }
 
 async function getShellConfigFile(): Promise<string | null> {
@@ -266,7 +202,7 @@ async function getShellConfigFile(): Promise<string | null> {
     if (!exists) continue
 
     const content = await Filesystem.readText(file).catch(() => "")
-    if (content.includes("# opencode") || content.includes(".opencode/bin")) {
+    if (content.includes("# netsky") || content.includes(".netsky/bin")) {
       return file
     }
   }
@@ -284,21 +220,21 @@ async function cleanShellConfig(file: string) {
   for (const line of lines) {
     const trimmed = line.trim()
 
-    if (trimmed === "# opencode") {
+    if (trimmed === "# netsky") {
       skip = true
       continue
     }
 
     if (skip) {
       skip = false
-      if (trimmed.includes(".opencode/bin") || trimmed.includes("fish_add_path")) {
+      if (trimmed.includes(".netsky/bin") || trimmed.includes("fish_add_path")) {
         continue
       }
     }
 
     if (
-      (trimmed.startsWith("export PATH=") && trimmed.includes(".opencode/bin")) ||
-      (trimmed.startsWith("fish_add_path") && trimmed.includes(".opencode"))
+      (trimmed.startsWith("export PATH=") && trimmed.includes(".netsky/bin")) ||
+      (trimmed.startsWith("fish_add_path") && trimmed.includes(".netsky"))
     ) {
       continue
     }

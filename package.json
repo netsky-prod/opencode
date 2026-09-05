@@ -1,7 +1,8 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
-  "name": "opencode",
-  "description": "AI-powered development tool",
+  "name": "netsky-code",
+  "version": "0.1.0",
+  "description": "Netsky Code AI development agent",
   "private": true,
   "type": "module",
   "packageManager": "bun@1.3.14",
@@ -119,7 +120,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/anomalyco/opencode"
+    "url": "https://github.com/netsky-prod/opencode"
   },
   "license": "MIT",
   "prettier": {

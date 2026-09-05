@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
-APP=opencode
+APP=netsky
 REPOSITORY=netsky-prod/opencode
-# Fork releases: https://github.com/netsky-prod/opencode/releases
-# Fork release API includes prereleases because fork builds use -loop.N versions.
+# Netsky Code releases: https://github.com/netsky-prod/opencode/releases
 
 MUTED='\033[0;2m'
 RED='\033[0;31m'
@@ -12,20 +11,20 @@ NC='\033[0m' # No Color
 
 usage() {
     cat <<EOF
-OpenCode Installer
+Netsky Code Installer
 
 Usage: install.sh [options]
 
 Options:
     -h, --help              Display this help message
-    -v, --version <version> Install a specific version (e.g., 1.0.180)
+    -v, --version <version> Install a specific version (e.g., 0.1.0)
     -b, --binary <path>     Install from a local binary instead of downloading
         --no-modify-path    Don't modify shell config files (.zshrc, .bashrc, etc.)
 
 Examples:
     curl -fsSL https://raw.githubusercontent.com/netsky-prod/opencode/dev/install | bash
-    curl -fsSL https://raw.githubusercontent.com/netsky-prod/opencode/dev/install | bash -s -- --version 1.18.25-loop.1
-    ./install --binary /path/to/opencode
+    curl -fsSL https://raw.githubusercontent.com/netsky-prod/opencode/dev/install | bash -s -- --version 0.1.0
+    ./install --binary /path/to/netsky
 EOF
 }
 
@@ -68,7 +67,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-INSTALL_DIR=$HOME/.opencode/bin
+INSTALL_DIR=$HOME/.netsky/bin
 mkdir -p "$INSTALL_DIR"
 
 # If --binary is provided, skip all download/detection logic
@@ -211,17 +210,17 @@ print_message() {
 }
 
 check_version() {
-    if command -v opencode >/dev/null 2>&1; then
-        opencode_path=$(which opencode)
+    if command -v "$APP" >/dev/null 2>&1; then
+        netsky_path=$(command -v "$APP")
 
         ## Check the installed version
-        installed_version=$(opencode --version 2>/dev/null || echo "")
+        installed_version=$("$APP" --version 2>/dev/null || echo "")
 
         if [[ "$installed_version" != "$specific_version" ]]; then
             print_message info "${MUTED}Installed version: ${NC}$installed_version."
-            case "$opencode_path" in
+            case "$netsky_path" in
                 "$INSTALL_DIR"/*)
-                    print_message info "${MUTED}Replacing fork binary at ${NC}$opencode_path${MUTED} with version ${NC}$specific_version"
+                    print_message info "${MUTED}Replacing Netsky Code binary at ${NC}$netsky_path${MUTED} with version ${NC}$specific_version"
                     ;;
             esac
         else
@@ -272,7 +271,7 @@ download_with_progress() {
     fi
 
     local tmp_dir=${TMPDIR:-/tmp}
-    local basename="${tmp_dir}/opencode_install_$$"
+    local basename="${tmp_dir}/netsky_install_$$"
     local tracefile="${basename}.trace"
 
     rm -f "$tracefile"
@@ -322,13 +321,45 @@ download_with_progress() {
 }
 
 download_and_install() {
-    print_message info "\n${MUTED}Installing ${NC}opencode ${MUTED}version: ${NC}$specific_version"
-    local tmp_dir="${TMPDIR:-/tmp}/opencode_install_$$"
+    print_message info "\n${MUTED}Installing ${NC}Netsky Code ${MUTED}version: ${NC}$specific_version"
+    local tmp_dir="${TMPDIR:-/tmp}/netsky_install_$$"
     mkdir -p "$tmp_dir"
 
     if [[ "$os" == "windows" ]] || ! [ -t 2 ] || ! download_with_progress "$url" "$tmp_dir/$filename"; then
         # Fallback to standard curl on Windows, non-TTY environments, or if custom progress fails
         curl -# -L -o "$tmp_dir/$filename" "$url"
+    fi
+
+    local checksums_url="https://github.com/$REPOSITORY/releases/download/v${specific_version}/SHA256SUMS"
+    if ! curl -fsSL -o "$tmp_dir/SHA256SUMS" "$checksums_url"; then
+        print_message error "Checksum verification failed: SHA256SUMS is unavailable."
+        rm -rf "$tmp_dir"
+        exit 1
+    fi
+
+    local expected_checksum
+    expected_checksum=$(awk -v filename="$filename" '$2 == filename || $2 == "*" filename { print $1; exit }' "$tmp_dir/SHA256SUMS")
+    if [ -z "$expected_checksum" ]; then
+        print_message error "Checksum verification failed: $filename is missing from SHA256SUMS."
+        rm -rf "$tmp_dir"
+        exit 1
+    fi
+
+    local actual_checksum
+    if command -v sha256sum >/dev/null 2>&1; then
+        actual_checksum=$(sha256sum "$tmp_dir/$filename" | awk '{print $1}')
+    elif command -v shasum >/dev/null 2>&1; then
+        actual_checksum=$(shasum -a 256 "$tmp_dir/$filename" | awk '{print $1}')
+    else
+        print_message error "Checksum verification failed: sha256sum or shasum is required."
+        rm -rf "$tmp_dir"
+        exit 1
+    fi
+
+    if [ "$(printf '%s' "$actual_checksum" | tr '[:upper:]' '[:lower:]')" != "$(printf '%s' "$expected_checksum" | tr '[:upper:]' '[:lower:]')" ]; then
+        print_message error "Checksum verification failed for $filename."
+        rm -rf "$tmp_dir"
+        exit 1
     fi
 
     if [ "$os" = "linux" ]; then
@@ -337,15 +368,15 @@ download_and_install() {
         unzip -q "$tmp_dir/$filename" -d "$tmp_dir"
     fi
 
-    mv "$tmp_dir/opencode" "$INSTALL_DIR"
-    chmod 755 "${INSTALL_DIR}/opencode"
+    mv "$tmp_dir/$APP" "$INSTALL_DIR/$APP"
+    chmod 755 "${INSTALL_DIR}/$APP"
     rm -rf "$tmp_dir"
 }
 
 install_from_binary() {
-    print_message info "\n${MUTED}Installing ${NC}opencode ${MUTED}from: ${NC}$binary_path"
-    cp "$binary_path" "${INSTALL_DIR}/opencode"
-    chmod 755 "${INSTALL_DIR}/opencode"
+    print_message info "\n${MUTED}Installing ${NC}Netsky Code ${MUTED}from: ${NC}$binary_path"
+    cp "$binary_path" "${INSTALL_DIR}/$APP"
+    chmod 755 "${INSTALL_DIR}/$APP"
 }
 
 if [ -n "$binary_path" ]; then
@@ -364,9 +395,9 @@ add_to_path() {
     if grep -Fxq "$command" "$config_file"; then
         print_message info "Command already exists in $config_file, skipping write."
     elif [[ -w $config_file ]]; then
-        echo -e "\n# opencode" >> "$config_file"
+        echo -e "\n# netsky" >> "$config_file"
         echo "$command" >> "$config_file"
-        print_message info "${MUTED}Successfully added ${NC}opencode ${MUTED}to \$PATH in ${NC}$config_file"
+        print_message info "${MUTED}Successfully added ${NC}netsky ${MUTED}to \$PATH in ${NC}$config_file"
     else
         print_message warning "Manually add the directory to $config_file (or similar):"
         print_message info "  $command"
@@ -442,17 +473,14 @@ if [ -n "${GITHUB_ACTIONS-}" ] && [ "${GITHUB_ACTIONS}" == "true" ]; then
 fi
 
 echo -e ""
-echo -e "${MUTED}                    ${NC}             ▄     "
-echo -e "${MUTED}█▀▀█ █▀▀█ █▀▀█ █▀▀▄ ${NC}█▀▀▀ █▀▀█ █▀▀█ █▀▀█"
-echo -e "${MUTED}█░░█ █░░█ █▀▀▀ █░░█ ${NC}█░░░ █░░█ █░░█ █▀▀▀"
-echo -e "${MUTED}▀▀▀▀ █▀▀▀ ▀▀▀▀ ▀  ▀ ${NC}▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀"
+echo -e "${MUTED}N E T S K Y${NC}  C O D E"
 echo -e ""
 echo -e ""
-echo -e "${MUTED}OpenCode includes free models, to start:${NC}"
+echo -e "${MUTED}Netsky Code is installed. To start:${NC}"
 echo -e ""
 echo -e "cd <project>  ${MUTED}# Open directory${NC}"
-echo -e "opencode      ${MUTED}# Run command${NC}"
+echo -e "netsky        ${MUTED}# Run command${NC}"
 echo -e ""
-echo -e "${MUTED}For more information visit ${NC}https://opencode.ai/docs"
+echo -e "${MUTED}For release information visit ${NC}https://github.com/$REPOSITORY/releases"
 echo -e ""
 echo -e ""
