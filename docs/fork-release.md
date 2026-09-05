@@ -1,6 +1,6 @@
 # Netsky Code installation and releases
 
-Netsky Code ships unsigned CLI binaries for macOS arm64/x64 and glibc Linux arm64/x64 (AVX2 required on Linux x64). The web UI is embedded. There are no Netsky npm, Homebrew, Scoop, Chocolatey, signed desktop, Windows, musl, or mobile releases in 0.1.0.
+Netsky Code ships unsigned CLI binaries for macOS arm64/x64 and glibc Linux arm64/x64 (AVX2 required on x64). The web UI is embedded. There are no Netsky npm, Homebrew, Scoop, Chocolatey, signed desktop, Windows, musl, or mobile releases in 0.1.0.
 
 ## Install or upgrade
 

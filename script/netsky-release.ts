@@ -11,6 +11,7 @@ async function prepare() {
   const version = process.argv[2]
   if (!version || semver.valid(version) !== version) throw new Error("Provide an exact semantic version, e.g. 0.1.0")
   const directory = path.resolve(process.argv[3] ?? "packages/opencode/dist")
+  const root = path.resolve(import.meta.dir, "..")
   for (const target of targets) {
     const binary = Bun.file(path.join(directory, `netsky-${target}`, "bin/netsky"))
     if (!(await binary.exists()) || binary.size === 0) throw new Error(`Missing binary: netsky-${target}/bin/netsky`)
@@ -22,8 +23,9 @@ async function prepare() {
       const name = `netsky-${target}.${target.startsWith("darwin") ? "zip" : "tar.gz"}`
       const archive = path.join(staging, name)
       const bin = path.join(directory, `netsky-${target}`, "bin")
-      if (target.startsWith("darwin")) await $`zip -q ${archive} netsky`.cwd(bin).quiet()
-      if (target.startsWith("linux")) await $`tar -C ${bin} -czf ${archive} netsky`.quiet()
+      if (target.startsWith("darwin"))
+        await $`zip -q -j ${archive} ${path.join(bin, "netsky")} ${path.join(root, "LICENSE")}`.quiet()
+      if (target.startsWith("linux")) await $`tar -czf ${archive} -C ${bin} netsky -C ${root} LICENSE`.quiet()
       const file = Bun.file(archive)
       const hash = new Bun.CryptoHasher("sha256")
       for await (const chunk of file.stream()) hash.update(chunk)

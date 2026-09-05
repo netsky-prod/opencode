@@ -37,8 +37,16 @@ describe("Netsky release packaging", () => {
       const listing = Bun.spawn(asset.name.endsWith("zip") ? ["unzip", "-Z1", archive] : ["tar", "-tzf", archive], {
         stdout: "pipe",
       })
-      expect((await new Response(listing.stdout).text()).trim()).toBe("netsky")
+      expect((await new Response(listing.stdout).text()).trim().split("\n").sort()).toEqual(["LICENSE", "netsky"])
       expect(await listing.exited).toBe(0)
+      const license = Bun.spawn(
+        asset.name.endsWith("zip") ? ["unzip", "-p", archive, "LICENSE"] : ["tar", "-xOzf", archive, "LICENSE"],
+        { stdout: "pipe" },
+      )
+      expect(await new Response(license.stdout).text()).toBe(
+        await Bun.file(path.resolve(import.meta.dir, "../../../../LICENSE")).text(),
+      )
+      expect(await license.exited).toBe(0)
     }
   })
 

@@ -688,7 +688,7 @@ export const dict = {
   "error.page.action.checkUpdates": "Buscar actualizaciones",
   "error.page.action.updateTo": "Actualizar a {{version}}",
   "error.page.report.prefix": "Informa de este error al equipo de Netsky Code",
-  "error.page.report.discord": "en Discord",
+  "error.page.report.github": "en GitHub",
   "error.page.version": "Versión: {{version}}",
 
   "error.dev.rootNotFound":

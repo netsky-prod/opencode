@@ -190,6 +190,23 @@ const provider: Provider.Info = {
 }
 
 describe("ACP service sessions", () => {
+  it("advertises Netsky identity and a usable terminal login command", async () => {
+    const service = ACPService.make({ sdk: {} as OpencodeClient })
+    const result = await Effect.runPromise(
+      service.initialize({
+        protocolVersion: 1,
+        clientCapabilities: { _meta: { "terminal-auth": true } },
+      }),
+    )
+    expect(result.agentInfo?.name).toBe("Netsky Code")
+    expect(result.authMethods?.[0]).toMatchObject({
+      id: "opencode-login",
+      description: "Run `netsky auth login` in the terminal",
+      name: "Login with Netsky Code",
+      _meta: { "terminal-auth": { command: "netsky", args: ["auth", "login"], label: "Netsky Code Login" } },
+    })
+  })
+
   const makeService = (
     messages: readonly { info: unknown; parts: readonly unknown[] }[] = [],
     options?: {

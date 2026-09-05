@@ -641,7 +641,7 @@ export const dict = {
   "error.page.action.updateTo": "{{version}} täzeläň",
   "error.page.circular": "[Tegelek]",
   "error.page.report.prefix": "Bu ýalňyşlygy Netsky Code toparyna habar bermegiňizi haýyş edýäris",
-  "error.page.report.discord": "Diskord",
+  "error.page.report.github": "Diskord",
   "error.page.version": "Wersiýa: {{version}}",
   "error.dev.rootNotFound":
     "Kök elementi tapylmady index.html-e goşmagy ýatdan çykardyňyzmy? Ora-da id atributynyň ýalňyş ýazylan bolmagy mümkin?",
