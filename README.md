@@ -15,7 +15,7 @@ netsky --version
 netsky
 ```
 
-Release **0.1.0** ships unsigned CLI binaries for macOS (Apple Silicon and Intel) and glibc Linux (arm64 and AVX2-capable x64). The CLI also includes a web interface, launched with `netsky web`. There is no Netsky npm/Homebrew package or signed desktop release yet; installing `opencode-ai` installs upstream OpenCode.
+Release **0.1.0** ships unsigned CLI binaries for macOS (Apple Silicon and Intel) and glibc Linux (arm64 and x64). AVX2 is required on x64, including Intel Macs. The CLI also includes a web interface, launched with `netsky web`. There is no Netsky npm/Homebrew package or signed desktop release yet; installing `opencode-ai` installs upstream OpenCode.
 
 See [installation, verification, and upgrades](docs/fork-release.md). On macOS, an unsigned binary can require explicit approval in Privacy & Security.
 

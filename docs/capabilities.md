@@ -11,7 +11,9 @@ Open `/capabilities` in the terminal UI. `/mcps` remains an entry point for MCP 
 
 **Storage scope is not activation.** A globally saved connection is available across projects. An always-on connection exposes its tools without a pack; a pack-only connection exposes them when its pack is enabled for the session. Moving an existing always-on MCP to pack-only mode requires an explicit confirmation. Existing connections are not migrated automatically.
 
-The editor preserves omitted secret values rather than round-tripping masked placeholders. Listings show credential field names, not credential values. Conflicting edits are rejected: refresh before saving again. Changes that affect later model turns do not cancel a tool call already running.
+The editor preserves omitted secret values rather than round-tripping masked placeholders. Listings show credential field names, not credential values; endpoint paths are redacted too. Conflicting MCP and manifest edits are rejected: refresh before saving again. Pack activation changes apply at provider-turn boundaries. Editing an always-on MCP is different: it reconnects the connection after explicit confirmation and may affect active sessions.
+
+In 0.1.0, editable inventory covers standard global config files and the current project's `opencode.json[c]` / `.opencode/opencode.json[c]`. Ancestor, organization-managed, and custom `OPENCODE_CONFIG*` sources still participate in effective runtime configuration, but are not editable inventory sources in this menu. Use their original configuration mechanism to manage them.
 
 ## Agent-managed activation
 
@@ -101,9 +103,9 @@ Minimal remote MCP example:
 }
 ```
 
-`version` is currently exactly `1`. A runtime has an ID, type, command array, optional environment mapping, `optional` (default false), and `timeoutMs` (default 15000). Optional `tools` declares known upstream names for collision checking; it is not an access allowlist. OpenCode's current adapter supports `type: "mcp"`; `cli` is reserved by the schema and fails explicitly in this adapter. Use a guidance-only profile with an empty runtime array for CLI workflows.
+`version` is currently exactly `1`. A runtime has an ID, type, command array, optional environment mapping, `optional` (default false), and `timeoutMs` (default 15000). Optional `tools` declares known upstream names for collision checking; it is not an access allowlist. Netsky Code's current adapter supports `type: "mcp"`; `cli` is reserved by the schema and fails explicitly in this adapter. Use a guidance-only profile with an empty runtime array for CLI workflows.
 
-A single URL command creates a remote MCP connection; its environment mapping becomes HTTP headers. Other command arrays start a local stdio MCP process. Use exact package versions for distributable runtimes. Resolved MCP tool names are namespaced as `<pack>_<runtime>_<sanitized-upstream-name>` and collisions are rejected.
+A single URL command creates a remote MCP connection; its environment mapping becomes HTTP headers. Other command arrays start a local stdio MCP process. Use exact package versions for distributable runtimes. Direct runtime tools are namespaced as `<pack>_<runtime>_<sanitized-upstream-name>`. Configured `mcp` references retain the configured server's tool namespace and permission identity; an always-on reference does not register duplicate tools.
 
 Environment substitution requires a whole value such as `${TEAM_RESEARCH_URL}`, not interpolation inside a string. Missing or empty variables fail with the variable name. For a bearer header, the environment variable must contain the complete `Bearer …` value. Do not put keys in manifests, prompts, committed shell scripts, or reports.
 
@@ -122,16 +124,16 @@ The supported platform literals are `darwin` and `linux`. Optional `permissions`
 }
 ```
 
-`hints` contains action/resource descriptions, not grants or enforced rules. `servers` maps IDs to Core MCP configuration objects: local `{ type: "local", command: [...] }` or remote `{ type: "remote", url: "..." }`, with the optional fields defined in `packages/core/src/config/mcp.ts`. In the current implementation this server metadata participates in discovery; it does not launch servers or replace `runtimes`. Keep credentials out of this metadata. Actual authorization comes from the session's existing OpenCode permission policy.
+`hints` contains action/resource descriptions, not grants or enforced rules. `servers` maps IDs to Core MCP configuration objects: local `{ type: "local", command: [...] }` or remote `{ type: "remote", url: "..." }`, with the optional fields defined in `packages/core/src/config/mcp.ts`. In the current implementation this server metadata participates in discovery; it does not launch servers or replace `runtimes`. Keep credentials out of this metadata. Actual authorization comes from the session's existing Netsky Code permission policy.
 
 ## Migrate existing research MCP configuration
 
 Existing global MCP connections remain supported. Migration is opt-in:
 
-1. Back up the OpenCode config and identify the exact Federated Research and Context7 entries. Leave unrelated MCPs intact.
-2. Supply `FEDERATED_RESEARCH_MCP_URL` and `FEDERATED_RESEARCH_AUTHORIZATION` in the environment of the process that starts OpenCode. Use the full authorization header value. A service/container needs its own secret injection; a shell export does not configure a remote service.
+1. Back up the Netsky Code config and identify the exact Federated Research and Context7 entries. Leave unrelated MCPs intact.
+2. Supply `FEDERATED_RESEARCH_MCP_URL` and `FEDERATED_RESEARCH_AUTHORIZATION` in the environment of the process that starts Netsky Code. Use the full authorization header value. A service/container needs its own secret injection; a shell export does not configure a remote service.
 3. In a fresh session, inspect `research/default`, enable it, call search and fetch, and verify the returned source. Check status for both required MCP runtimes.
-4. Only after that succeeds, disable the equivalent global MCP entries to avoid duplicate always-visible tools. Restart OpenCode and verify another fresh session exposes no research schemas until activation.
+4. Only after that succeeds, disable the equivalent global MCP entries to avoid duplicate always-visible tools. Restart Netsky Code and verify another fresh session exposes no research schemas until activation.
 
 To roll back, re-enable the original MCP entries and disable the pack. Do not delete credentials or the research server. A project override can change transports, profiles, or the Context7 configuration without editing the binary.
 

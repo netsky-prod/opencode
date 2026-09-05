@@ -15,7 +15,7 @@ netsky --version
 netsky
 ```
 
-В **0.1.0** выпускаются неподписанные CLI-бинарники для macOS Apple Silicon/Intel и glibc Linux arm64/x64 с AVX2. В бинарник включён веб-интерфейс: `netsky web`. Собственного npm/Homebrew-пакета и подписанного десктопного приложения пока нет. Пакет `opencode-ai` устанавливает оригинальный OpenCode.
+В **0.1.0** выпускаются неподписанные CLI-бинарники для macOS Apple Silicon/Intel и glibc Linux arm64/x64. На x64 нужен AVX2, в том числе на Intel Mac. В бинарник включён веб-интерфейс: `netsky web`. Собственного npm/Homebrew-пакета и подписанного десктопного приложения пока нет. Пакет `opencode-ai` устанавливает оригинальный OpenCode.
 
 [Установка, проверка и обновление](docs/fork-release.md). На macOS неподписанный бинарник может потребовать разрешения в настройках Privacy & Security.
 
