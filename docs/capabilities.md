@@ -11,6 +11,8 @@ Open `/capabilities` in the terminal UI. `/mcps` remains an entry point for MCP 
 
 **Storage scope is not activation.** A globally saved connection is available across projects. An always-on connection exposes its tools without a pack; a pack-only connection exposes them when its pack is enabled for the session. Moving an existing always-on MCP to pack-only mode requires an explicit confirmation. Existing connections are not migrated automatically.
 
+Opening the menu reads metadata and current runtime state without launching dependency probes. Prerequisites are checked when activating a pack or explicitly calling `capability_status`; an inactive inventory row is not a fresh health check.
+
 The editor preserves omitted secret values rather than round-tripping masked placeholders. Listings show credential field names, not credential values; endpoint paths are redacted too. Conflicting MCP and manifest edits are rejected: refresh before saving again. Pack activation changes apply at provider-turn boundaries. Editing an always-on MCP is different: it reconnects the connection after explicit confirmation and may affect active sessions.
 
 In 0.1.0, editable inventory covers standard global config files and the current project's `opencode.json[c]` / `.opencode/opencode.json[c]`. Ancestor, organization-managed, and custom `OPENCODE_CONFIG*` sources still participate in effective runtime configuration, but are not editable inventory sources in this menu. Use their original configuration mechanism to manage them.

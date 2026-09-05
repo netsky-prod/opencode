@@ -25,11 +25,11 @@ Files: `packages/core/src/tool/capability.ts`, `packages/core/src/capability/man
 
 Consumes: existing catalog/state/runtime and Config/MCP services. Produces: typed manager list, activation/deactivation, MCP save/check, and pack attachment endpoints. Send exact SDK method names/payloads to TUI integrator before UI implementation.
 
-- [ ] Add failing integration tests for direct session-scoped enable/disable, no fabricated conversation, and different-session isolation.
-- [ ] Extract/reuse shared management operations; human entry points must not ask the LLM to perform toggles.
-- [ ] Add failing tests for local/remote MCP persistence and reference-based pack attachment; assert unrelated JSONC config and secrets are preserved and never exposed in diagnostics.
-- [ ] Implement atomic configuration/manifest operations and explicit always-on vs pack-only selection.
-- [ ] Run capability integration suites and affected typechecks; generate SDKs; commit only owned files after green verification.
+- [x] Add failing integration tests for direct session-scoped enable/disable, no fabricated conversation, and different-session isolation.
+- [x] Extract/reuse shared management operations; human entry points must not ask the LLM to perform toggles.
+- [x] Add failing tests for local/remote MCP persistence and reference-based pack attachment; assert unrelated JSONC config and secrets are preserved and never exposed in diagnostics.
+- [x] Implement atomic configuration/manifest operations and explicit always-on vs pack-only selection.
+- [x] Run capability integration suites and affected typechecks; generate SDKs; commit only owned files after green verification.
 
 Example behavioral boundary for tests:
 
@@ -45,10 +45,10 @@ Files: `install`, `packages/opencode/script/build.ts`, CLI entry/help/installati
 
 Consumes: existing fork installer/build flow. Produces: native `netsky` executable/assets and fork-only install/upgrade behavior.
 
-- [ ] Add failing installer/upgrade tests exercising Netsky archive names and the `netsky` executable, preserving old data.
-- [ ] Implement Netsky public constants, startup/help/logo text and binary packaging; keep upstream compatibility identifiers internal.
-- [ ] Verify installed binary probes, installer error paths, release URL selection and plugin resolution without an unpublished npm version.
-- [ ] Run focused installation tests and typechecks; commit only owned files.
+- [x] Add failing installer/upgrade tests exercising Netsky archive names and the `netsky` executable, preserving old data.
+- [x] Implement Netsky public constants, startup/help/logo text and binary packaging; keep upstream compatibility identifiers internal.
+- [x] Verify installed binary probes, installer error paths, release URL selection and plugin resolution without an unpublished npm version.
+- [x] Run focused installation tests and typechecks; commit only owned files.
 
 ```sh
 netsky --version
@@ -62,19 +62,19 @@ Files: `packages/tui/src/component/dialog-capabilities.tsx`, supporting focused 
 
 Consumes: Task 1 generated SDK management methods; existing DialogSelect/DialogPrompt, route sessionID, toast and SDK contexts. Produces: `/capabilities` and `/mcps` direct UI flow.
 
-- [ ] Add failing UI/model tests for status rendering, profile choice, missing session, pending actions, errors, and form payloads.
-- [ ] Add pack list/detail/enable/disable, configured MCP list/edit/add/check, and attach/create-pack dialogs. Require a session only for session activation, not inventory or global configuration.
-- [ ] Keep secrets masked; display scope and exposure separately; do not optimistically report failed writes as success.
-- [ ] Run TUI tests/typecheck and native PTY acceptance through keyboard navigation with controlled real MCP fixtures.
+- [x] Add failing UI/model tests for status rendering, profile choice, missing session, pending actions, errors, and form payloads.
+- [x] Add pack list/detail/enable/disable, configured MCP list/edit/add/check, and attach/create-pack dialogs. Require a session only for session activation, not inventory or global configuration.
+- [x] Keep secrets masked; display scope and exposure separately; do not optimistically report failed writes as success.
+- [x] Run TUI tests/typecheck and native PTY acceptance through keyboard navigation with controlled real MCP fixtures.
 
 ## Task 4: Documentation, web identity, release packaging
 
 Files: root README languages, `docs/capabilities.md`, `docs/fork-release.md`, `docs/loop.md`, relevant shipped web identity/assets and `.github/workflows/fork-release.yml`.
 
-- [ ] Replace upstream-facing installation/marketing README content with honest Netsky positioning, commands, supported platforms, current features and upstream attribution. Link translations to maintained English/Russian docs when full translations are not maintained.
-- [ ] Document migration and capability menu; list deferred features as not shipped.
-- [ ] Update fork release workflow to accept stable semver, build four archives, generate/verify checksums, and publish only after validation.
-- [ ] Verify README links and install instructions against produced artifacts; preserve licensing.
+- [x] Replace upstream-facing installation/marketing README content with honest Netsky positioning, commands, supported platforms, current features and upstream attribution. Link translations to maintained English/Russian docs when full translations are not maintained.
+- [x] Document migration and capability menu; list deferred features as not shipped.
+- [x] Update fork release workflow to accept stable semver, build four archives, generate/verify checksums, and publish only after validation.
+- [x] Verify README links and install instructions against produced artifacts; preserve licensing.
 
 ## Task 5: Acceptance and publication
 
