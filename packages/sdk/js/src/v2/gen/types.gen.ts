@@ -1837,6 +1837,7 @@ export type ProviderConfig = {
 }
 
 export type McpLocalConfig = {
+  exposure?: "always-on" | "pack-only"
   /**
    * Type of MCP server connection
    */
@@ -1862,6 +1863,7 @@ export type McpOAuthConfig = {
 }
 
 export type McpRemoteConfig = {
+  exposure?: "always-on" | "pack-only"
   /**
    * Type of MCP server connection
    */
@@ -2432,6 +2434,10 @@ export type McpUnsupportedOAuthError = {
 export type McpServerNotFoundError = {
   _tag: "McpServerNotFoundError"
   name: string
+  message: string
+}
+
+export type CapabilityManagerError = {
   message: string
 }
 
@@ -8774,6 +8780,298 @@ export type McpDisconnectResponses = {
 }
 
 export type McpDisconnectResponse = McpDisconnectResponses[keyof McpDisconnectResponses]
+
+export type CapabilityListData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+    sessionID?: string
+  }
+  url: "/capability"
+}
+
+export type CapabilityListErrors = {
+  /**
+   * CapabilityManagerError | InvalidRequestError
+   */
+  400: CapabilityManagerError | InvalidRequestError
+}
+
+export type CapabilityListError = CapabilityListErrors[keyof CapabilityListErrors]
+
+export type CapabilityListResponses = {
+  /**
+   * Success
+   */
+  200: {
+    packs: Array<{
+      id: string
+      description: string
+      source: "builtin" | "global" | "project" | "unavailable"
+      revision: string
+      profiles: Array<{
+        id: string
+        description: string
+        platforms: Array<string>
+      }>
+      active: boolean
+      selectedProfiles: Array<string>
+      state: string
+      remediation: Array<string>
+    }>
+    mcps: Array<{
+      name: string
+      scope: "global" | "project"
+      type: "local" | "remote"
+      exposure: "always-on" | "pack-only"
+      enabled: boolean
+      revision: string
+      command?: Array<string>
+      url?: string
+      environmentKeys: Array<string>
+      headerKeys: Array<string>
+      status: string
+    }>
+    configRevisions: {
+      global: string
+      project: string
+    }
+  }
+}
+
+export type CapabilityListResponse = CapabilityListResponses[keyof CapabilityListResponses]
+
+export type CapabilityEnableData = {
+  body?: {
+    sessionID: string
+    id: string
+    profiles?: Array<string>
+  }
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/capability/enable"
+}
+
+export type CapabilityEnableErrors = {
+  /**
+   * CapabilityManagerError | InvalidRequestError
+   */
+  400: CapabilityManagerError | InvalidRequestError
+}
+
+export type CapabilityEnableError = CapabilityEnableErrors[keyof CapabilityEnableErrors]
+
+export type CapabilityEnableResponses = {
+  /**
+   * Success
+   */
+  200: {
+    id: string
+    profiles: Array<string>
+    state: "active" | "degraded" | "failed" | "unsupported"
+    nextTurn: boolean
+    tools: Array<string>
+    skills: Array<string>
+    availableTools: Array<string>
+    availableSkills: Array<string>
+    permissionFiltered: boolean
+    dependencies: Array<{
+      id: string
+      state: "available" | "missing" | "optional-missing"
+      checkedAt: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      remediation?: string
+    }>
+    remediation: Array<string>
+  }
+}
+
+export type CapabilityEnableResponse = CapabilityEnableResponses[keyof CapabilityEnableResponses]
+
+export type CapabilityDisableData = {
+  body?: {
+    sessionID: string
+    id: string
+  }
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/capability/disable"
+}
+
+export type CapabilityDisableErrors = {
+  /**
+   * CapabilityManagerError | InvalidRequestError
+   */
+  400: CapabilityManagerError | InvalidRequestError
+}
+
+export type CapabilityDisableError = CapabilityDisableErrors[keyof CapabilityDisableErrors]
+
+export type CapabilityDisableResponses = {
+  /**
+   * Success
+   */
+  200: {
+    id: string
+    state: "disabled"
+    nextTurn: boolean
+  }
+}
+
+export type CapabilityDisableResponse = CapabilityDisableResponses[keyof CapabilityDisableResponses]
+
+export type CapabilitySaveMcpData = {
+  body?: {
+    name: string
+    scope: "global" | "project"
+    revision: string
+    config:
+      | {
+          type: "local"
+          command?: Array<string>
+          cwd?: string
+          environment?: {
+            [key: string]: string
+          }
+          enabled?: boolean
+          timeout?: number
+        }
+      | {
+          type: "remote"
+          url?: string
+          headers?: {
+            [key: string]: string
+          }
+          oauth?: McpOAuthConfig | false
+          enabled?: boolean
+          timeout?: number
+        }
+    exposure: "always-on" | "pack-only"
+    confirmExposureChange?: boolean
+  }
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/capability/mcp"
+}
+
+export type CapabilitySaveMcpErrors = {
+  /**
+   * CapabilityManagerError | InvalidRequestError
+   */
+  400: CapabilityManagerError | InvalidRequestError
+}
+
+export type CapabilitySaveMcpError = CapabilitySaveMcpErrors[keyof CapabilitySaveMcpErrors]
+
+export type CapabilitySaveMcpResponses = {
+  /**
+   * Success
+   */
+  200: {
+    name: string
+    scope: "global" | "project"
+    type: "local" | "remote"
+    exposure: "always-on" | "pack-only"
+    enabled: boolean
+    revision: string
+    command?: Array<string>
+    url?: string
+    environmentKeys: Array<string>
+    headerKeys: Array<string>
+    status: string
+  }
+}
+
+export type CapabilitySaveMcpResponse = CapabilitySaveMcpResponses[keyof CapabilitySaveMcpResponses]
+
+export type CapabilityCheckMcpData = {
+  body?: {
+    name: string
+    scope?: "global" | "project"
+  }
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/capability/mcp/check"
+}
+
+export type CapabilityCheckMcpErrors = {
+  /**
+   * CapabilityManagerError | InvalidRequestError
+   */
+  400: CapabilityManagerError | InvalidRequestError
+}
+
+export type CapabilityCheckMcpError = CapabilityCheckMcpErrors[keyof CapabilityCheckMcpErrors]
+
+export type CapabilityCheckMcpResponses = {
+  /**
+   * Success
+   */
+  200: {
+    name: string
+    state: "connected" | "failed" | "needs_auth"
+    tools: Array<string>
+    remediation: Array<string>
+  }
+}
+
+export type CapabilityCheckMcpResponse = CapabilityCheckMcpResponses[keyof CapabilityCheckMcpResponses]
+
+export type CapabilityAttachMcpData = {
+  body?: {
+    name: string
+    mcpScope?: "global" | "project"
+    mcpRevision: string
+    scope: "global" | "project"
+    packID: string
+    profile: string
+    description?: string
+    revision: string
+    confirmExposureChange?: boolean
+  }
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/capability/mcp/attach"
+}
+
+export type CapabilityAttachMcpErrors = {
+  /**
+   * CapabilityManagerError | InvalidRequestError
+   */
+  400: CapabilityManagerError | InvalidRequestError
+}
+
+export type CapabilityAttachMcpError = CapabilityAttachMcpErrors[keyof CapabilityAttachMcpErrors]
+
+export type CapabilityAttachMcpResponses = {
+  /**
+   * Success
+   */
+  200: {
+    id: string
+    profile: string
+    reference: string
+    exposure: "pack-only"
+  }
+}
+
+export type CapabilityAttachMcpResponse = CapabilityAttachMcpResponses[keyof CapabilityAttachMcpResponses]
 
 export type ProjectListData = {
   body?: never

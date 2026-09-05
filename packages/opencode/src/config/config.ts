@@ -124,7 +124,7 @@ type State = {
 }
 
 export interface Interface {
-  readonly get: () => Effect.Effect<Info>
+  readonly get: (options?: { refresh?: boolean }) => Effect.Effect<Info>
   readonly getGlobal: () => Effect.Effect<Info>
   readonly getConsoleState: () => Effect.Effect<ConsoleState>
   readonly update: (config: Info) => Effect.Effect<void>
@@ -618,7 +618,11 @@ const layer = Layer.effect(
       }),
     )
 
-    const get = Effect.fn("Config.get")(function* () {
+    const get = Effect.fn("Config.get")(function* (options?: { refresh?: boolean }) {
+      if (options?.refresh) {
+        yield* invalidateGlobal
+        yield* InstanceState.invalidate(state)
+      }
       return yield* InstanceState.use(state, (s) => s.config)
     })
 

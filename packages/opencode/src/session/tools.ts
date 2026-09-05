@@ -560,7 +560,10 @@ function coreTools(input: { session: Session.Info; permissions: PermissionV1.Rul
       for (const profileID of activation.profiles) {
         const profile = Object.entries(pack.profiles).find(([id]) => id === profileID)?.[1]
         if (!profile) continue
-        for (const runtime of profile.runtimes) prefixes.add(`${pack.id}_${runtime}_`)
+        for (const runtime of profile.runtimes) {
+          const definition = pack.runtimes.find((entry) => entry.id === runtime)
+          prefixes.add(definition?.mcp ? `${McpCatalog.sanitize(definition.mcp)}_` : `${pack.id}_${runtime}_`)
+        }
         for (const skill of profile.skills) skillNames.add(skill)
       }
     }

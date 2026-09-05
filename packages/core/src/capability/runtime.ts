@@ -23,6 +23,7 @@ export type Status = {
 
 export interface Tool {
   readonly name: string
+  readonly permission?: { readonly action: string; readonly resource: string }
   readonly description: string
   readonly inputSchema: Readonly<object>
   readonly call: (input: unknown, signal?: AbortSignal) => Effect.Effect<unknown, unknown>

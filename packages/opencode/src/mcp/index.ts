@@ -91,11 +91,12 @@ declare const RegistrationType: unique symbol
 
 export interface Registration {
   readonly name: string
+  readonly authName?: string
   readonly [RegistrationType]: typeof RegistrationType
 }
 
-function makeRegistration(name: string) {
-  return Object.freeze({ name }) as Registration
+function makeRegistration(name: string, authName?: string) {
+  return Object.freeze({ name, authName }) as Registration
 }
 
 declare const AuthFlowTokenType: unique symbol
@@ -221,6 +222,7 @@ export interface Definition {
 }
 
 export interface Interface {
+  readonly config: (name: string) => Effect.Effect<ConfigMCPV1.Info | undefined>
   readonly status: () => Effect.Effect<Record<string, Status>>
   readonly clients: () => Effect.Effect<Record<string, MCPClient>>
   readonly instructions: () => Effect.Effect<ServerInstructions[]>
@@ -235,7 +237,7 @@ export interface Interface {
   readonly add: (
     name: string,
     mcp: ConfigMCPV1.Info,
-    options?: { readonly hidden?: boolean },
+    options?: { readonly hidden?: boolean; readonly authName?: string; readonly connect?: boolean },
   ) => Effect.Effect<{ status: Record<string, Status> | Status; registration: Registration }>
   readonly remove: (registration: Registration) => Effect.Effect<void, NotFoundError>
   readonly connect: (name: string) => Effect.Effect<void, NotFoundError>
@@ -338,7 +340,7 @@ const layer = Layer.effect(
 
       if (!oauthDisabled) {
         authProvider = new McpOAuthProvider(
-          key,
+          registration.authName ?? key,
           mcp.url,
           {
             clientId: oauthConfig?.clientId,
@@ -606,7 +608,8 @@ const layer = Layer.effect(
 
               const registration = makeRegistration(key)
               s.registrations[key] = registration
-              if (mcp.enabled === false) {
+              if (mcp.exposure === "pack-only") s.hidden.add(key)
+              if (mcp.enabled === false || mcp.exposure === "pack-only") {
                 s.status[key] = { status: "disabled" }
                 return
               }
@@ -800,19 +803,21 @@ const layer = Layer.effect(
     const add = Effect.fn("MCP.add")(function* (
       name: string,
       mcp: ConfigMCPV1.Info,
-      options?: { readonly hidden?: boolean },
+      options?: { readonly hidden?: boolean; readonly authName?: string; readonly connect?: boolean },
     ) {
       const s = yield* InstanceState.get(state)
       const previousRegistration = s.registrations[name]
       const previousPending = previousRegistration ? takePending(previousRegistration) : undefined
       const previousTimeout = s.config[name]?.timeout
-      const registration = makeRegistration(name)
+      const registration = makeRegistration(name, options?.authName)
       s.config[name] = mcp
       s.registrations[name] = registration
       if (options?.hidden) s.hidden.add(name)
       else s.hidden.delete(name)
       return yield* (previousPending ? closePending(previousPending, previousTimeout) : Effect.void).pipe(
-        Effect.andThen(createAndStore(name, mcp, registration)),
+        Effect.andThen(
+          createAndStore(name, options?.connect === false ? { ...mcp, enabled: false } : mcp, registration),
+        ),
         Effect.as({ status: s.status, registration }),
         Effect.onExit((exit) =>
           Exit.isFailure(exit) ? removeOwned(s, registration).pipe(Effect.asVoid) : Effect.void,
@@ -1279,6 +1284,7 @@ const layer = Layer.effect(
     })
 
     return Service.of({
+      config: getMcpConfig,
       status,
       clients,
       instructions,

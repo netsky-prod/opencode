@@ -49,15 +49,28 @@ const layer = Layer.effect(
             return Effect.gen(function* () {
               if (definition.type !== "mcp") throw new Error(`Unsupported capability runtime type: ${definition.type}`)
               if (runtimeID(key) !== definition.id) throw new Error(`Capability runtime key does not match: ${key}`)
-              const configured = yield* Effect.try({
-                try: () => mcpConfig(definition),
-                catch: (error) => (error instanceof Error ? error : new Error(String(error))),
-              })
-              const lineage = `${packID(key)}\0${runtimeID(key)}`
+              const reference = definition.mcp ? yield* mcp.config(definition.mcp) : undefined
+              if (definition.mcp && !reference) throw new Error("Configured MCP reference is unavailable")
+              if (reference?.enabled === false) throw new Error("Configured MCP reference is disabled")
+              // Always-on connections retain their one original tool catalog. A reference
+              // does not acquire or rename them, and releasing a pack never closes them.
+              if (reference && reference.exposure !== "pack-only") {
+                if ((yield* mcp.connection(definition.mcp!))?.status !== "connected") {
+                  throw new Error("Configured MCP connection is unavailable; check or authenticate the server")
+                }
+                return { value: Object.freeze({ tools: [] }), stop: Effect.void, exited: Effect.never }
+              }
+              const configured = reference
+                ? { info: { ...reference, enabled: true }, sensitive: sensitiveConfig(reference) }
+                : yield* Effect.try({
+                    try: () => mcpConfig(definition),
+                    catch: (error) => (error instanceof Error ? error : new Error(String(error))),
+                  })
+              const lineage = definition.mcp ? `reference:${definition.mcp}` : `${packID(key)}\0${runtimeID(key)}`
               if (yield* mcp.connection(server)) throw new Error(`MCP server name is already registered: ${server}`)
               const existing = new Set(Object.keys(yield* mcp.tools()))
               return yield* Effect.gen(function* () {
-                const added = yield* mcp.add(server, configured.info, { hidden: true })
+                const added = yield* mcp.add(server, configured.info, { hidden: true, authName: definition.mcp })
                 const owned = added.registration
                 registration = owned
                 const connection = isStatus(added.status) ? added.status : added.status[server]
@@ -70,12 +83,14 @@ const layer = Layer.effect(
                 }
 
                 const upstream = yield* mcp.definitions(server)
-                const names = upstream.map((definition) =>
-                  CapabilityManifest.canonicalName(
-                    packID(key),
-                    runtimeID(key),
-                    McpCatalog.sanitize(definition.upstreamName),
-                  ),
+                const names = upstream.map((upstreamDefinition) =>
+                  definition.mcp
+                    ? McpCatalog.toolName(definition.mcp, upstreamDefinition.upstreamName)
+                    : CapabilityManifest.canonicalName(
+                        packID(key),
+                        runtimeID(key),
+                        McpCatalog.sanitize(upstreamDefinition.upstreamName),
+                      ),
                 )
                 const collision = names.find(
                   (name, index) =>
@@ -93,12 +108,20 @@ const layer = Layer.effect(
                 }
 
                 const definitions = Object.freeze(
-                  upstream.map((definition, index) =>
+                  upstream.map((upstreamDefinition, index) =>
                     Object.freeze({
                       name: names[index],
-                      description: definition.description,
-                      inputSchema: definition.inputSchema,
-                      call: definition.call,
+                      ...(definition.mcp
+                        ? {
+                            permission: {
+                              action: McpCatalog.toolName(definition.mcp, upstreamDefinition.upstreamName),
+                              resource: `mcp:${definition.mcp}:${McpCatalog.toolName(definition.mcp, upstreamDefinition.upstreamName)}`,
+                            },
+                          }
+                        : {}),
+                      description: upstreamDefinition.description,
+                      inputSchema: upstreamDefinition.inputSchema,
+                      call: upstreamDefinition.call,
                     }),
                   ),
                 )
@@ -173,7 +196,7 @@ function mcpConfig(definition: CapabilityManifest.Runtime): {
   readonly sensitive: ReadonlyArray<string>
 } {
   const sensitive = new Set<string>()
-  const commandLine = definition.command.map((value) => resolveEnvironment(value, sensitive))
+  const commandLine = (definition.command ?? []).map((value) => resolveEnvironment(value, sensitive))
   const environment = definition.environment
     ? Object.fromEntries(
         Object.entries(definition.environment).map(([name, value]) => [name, resolveEnvironment(value, sensitive)]),
@@ -220,6 +243,16 @@ function redactResolved(message: string, sensitive: ReadonlyArray<string>) {
   return sensitive
     .toSorted((left, right) => right.length - left.length)
     .reduce((result, value) => result.replaceAll(value, "[redacted]"), message)
+}
+
+function sensitiveConfig(config: ConfigMCPV1.Info) {
+  return config.type === "local"
+    ? [...config.command.slice(1), ...Object.values(config.environment ?? {})].filter(Boolean)
+    : [
+        config.url,
+        ...Object.values(config.headers ?? {}),
+        ...(typeof config.oauth === "object" ? [config.oauth.clientSecret ?? ""] : []),
+      ].filter(Boolean)
 }
 
 function isStatus(status: Record<string, MCP.Status> | MCP.Status): status is MCP.Status {

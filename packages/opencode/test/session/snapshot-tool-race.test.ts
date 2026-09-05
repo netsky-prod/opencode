@@ -35,6 +35,7 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 const mcp = Layer.succeed(
   MCP.Service,
   MCP.Service.of({
+    config: () => Effect.succeed(undefined),
     status: () => Effect.succeed({}),
     clients: () => Effect.succeed({}),
     instructions: () => Effect.succeed([]),

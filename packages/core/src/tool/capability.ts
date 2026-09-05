@@ -1,7 +1,7 @@
 export * as CapabilityTool from "./capability"
 
 import { ToolFailure } from "@opencode-ai/llm"
-import { Clock, Effect, Exit, Layer, Result, Schema, Scope } from "effect"
+import { Clock, Context, Effect, Exit, Layer, Result, Schema, Scope } from "effect"
 import { ChildProcess } from "effect/unstable/process"
 import { AgentV2 } from "../agent"
 import { CapabilityCatalog } from "../capability/catalog"
@@ -68,7 +68,7 @@ const SearchResult = Schema.Struct({
   dependencies: Schema.Array(DependencyHealth).check(Schema.isMaxLength(32)),
 })
 
-const EnableOutput = Schema.Struct({
+export const EnableOutput = Schema.Struct({
   id: CapabilityManifest.ID,
   profiles: Profiles,
   state: Schema.Literals(["active", "degraded", "failed", "unsupported"]),
@@ -82,7 +82,7 @@ const EnableOutput = Schema.Struct({
   remediation: Schema.Array(Schema.String.check(Schema.isMaxLength(500))).check(Schema.isMaxLength(32)),
 })
 
-const CapabilityStatus = Schema.Struct({
+export const CapabilityStatus = Schema.Struct({
   id: CapabilityManifest.ID,
   state: Schema.Literals(["installed", "active", "degraded", "failed", "unsupported", "unavailable"]),
   profiles: Schema.Array(CapabilityManifest.ID).check(Schema.isMaxLength(32)),
@@ -109,7 +109,29 @@ type SharedRegistration = {
   readonly scope: Scope.Closeable
 }
 
-const layer = Layer.effectDiscard(
+type EnableInput = {
+  readonly id: CapabilityManifest.ID
+  readonly profile?: CapabilityManifest.ID
+  readonly profiles?: ReadonlyArray<CapabilityManifest.ID>
+}
+type DisableInput = { readonly id: CapabilityManifest.ID }
+type StatusInput = { readonly id?: CapabilityManifest.ID }
+type ManagementContext = { readonly sessionID: SessionSchema.ID; readonly agent?: AgentV2.ID }
+type StatusContext = { readonly sessionID?: SessionSchema.ID }
+export interface Interface {
+  readonly refresh: (reference: string) => Effect.Effect<void>
+  readonly enable: (input: EnableInput & ManagementContext) => Effect.Effect<EnableOutput, ToolFailure>
+  readonly disable: (
+    input: DisableInput & ManagementContext,
+  ) => Effect.Effect<{ id: CapabilityManifest.ID; state: "disabled"; nextTurn: boolean }>
+  readonly status: (
+    sessionID?: SessionSchema.ID,
+  ) => Effect.Effect<{ capabilities: ReadonlyArray<typeof CapabilityStatus.Type> }>
+}
+export class Service extends Context.Service<Service, Interface>()("@opencode/CapabilityManagement") {}
+
+const layer = Layer.effect(
+  Service,
   Effect.gen(function* () {
     const catalog = yield* CapabilityCatalog.Service
     const eventBus = yield* EventV2.Service
@@ -126,6 +148,14 @@ const layer = Layer.effectDiscard(
     const held = new Map<string, Held>()
     const shared = new Map<string, SharedRegistration>()
     const failures = new Map<string, { readonly checkedAt: number; readonly remediation: ReadonlyArray<string> }>()
+    const referenceVersions = new Map<string, number>()
+    const manifestFingerprint = (pack: CapabilityCatalog.Pack) =>
+      Hash.sha256(
+        JSON.stringify([
+          originalManifestFingerprint(pack),
+          pack.runtimes.map((runtime) => (runtime.mcp ? (referenceVersions.get(runtime.mcp) ?? 0) : 0)),
+        ]),
+      )
 
     const authorize = (
       context: Tool.Context,
@@ -267,13 +297,14 @@ const layer = Layer.effectDiscard(
                               new ToolFailure({ message: `Capability runtime unavailable: ${pack.id}/${runtimeID}` }),
                             )
                           }
-                          const canonical = canonicalResource(runtimeID, definition.name)
+                          const canonical =
+                            current.permission?.resource ?? canonicalResource(runtimeID, definition.name)
                           const checked = permissionResources(canonical, input)
                           if (Result.isFailure(checked)) {
                             return Effect.fail(new ToolFailure({ message: checked.failure.message }))
                           }
                           const authorization = {
-                            action: definition.name,
+                            action: current.permission?.action ?? definition.name,
                             resources: checked.success,
                             save: [canonical],
                             sessionID: context.sessionID,
@@ -303,7 +334,12 @@ const layer = Layer.effectDiscard(
                         toStructuredOutput: structuredOutput,
                         toModelOutput: modelOutput,
                       }),
-                      { type: "mcp", serverID: runtimeID, capability: pack.id, profile: profileID },
+                      {
+                        type: "mcp",
+                        serverID: runtimeDefinition.mcp ?? runtimeID,
+                        capability: pack.id,
+                        profile: profileID,
+                      },
                     ),
                   ]),
                 )
@@ -401,7 +437,9 @@ const layer = Layer.effectDiscard(
               reference?.value?.tools.filter(
                 (tool) =>
                   PermissionV2.evaluate(tool.name, canonicalResource(definition.id, tool.name), rules).effect !==
-                  "deny",
+                    "deny" &&
+                  (!tool.permission ||
+                    PermissionV2.evaluate(tool.permission.action, tool.permission.resource, rules).effect !== "deny"),
               ) ?? []
             ).map((tool) => tool.name)
           })
@@ -505,6 +543,194 @@ const layer = Layer.effectDiscard(
         return new Set(outcomes.filter((id): id is string => id !== undefined))
       })
 
+    const enable = (
+      input: EnableInput,
+      context: ManagementContext,
+      authorization: Effect.Effect<void, ToolFailure> = Effect.void,
+    ) => {
+      let runtimeCount = 0
+      const operation = Effect.suspend(() =>
+        locks.withLock(activationKey(context.sessionID, input.id))(
+          Effect.gen(function* () {
+            const pack = yield* catalog.get(input.id)
+            if (!pack) return yield* new ToolFailure({ message: `Capability manifest not found: ${input.id}` })
+            const key = activationKey(context.sessionID, input.id)
+            const durable = (yield* state.list(context.sessionID)).find((activation) => activation.id === input.id)
+            const current = held.get(key)
+            if (
+              current &&
+              (!durable ||
+                current.fingerprint !== manifestFingerprint(pack) ||
+                !sameProfiles(current.profiles, durable.profiles))
+            ) {
+              yield* dropHeld(key, current)
+            }
+            const aliases = input.profiles?.length ? input.profiles : undefined
+            if (aliases && input.profile && (aliases.length !== 1 || aliases[0] !== input.profile)) {
+              return yield* new ToolFailure({
+                message: `Conflicting capability profile aliases: profile=${input.profile}, profiles=${aliases.join(",")}`,
+              })
+            }
+            const available = Object.keys(pack.profiles).map((profile) => CapabilityManifest.ID.make(profile))
+            const requested =
+              aliases ??
+              (input.profile
+                ? [input.profile]
+                : Object.hasOwn(pack.profiles, "default")
+                  ? [CapabilityManifest.ID.make("default")]
+                  : available.length === 1
+                    ? available
+                    : undefined)
+            if (!requested) {
+              return yield* new ToolFailure({
+                message: `Capability ${input.id} requires a profile. Available profiles: ${available.join(", ")}`,
+              })
+            }
+            const profiles = validProfiles(pack, requested)
+            if (!profiles) {
+              const missing = requested.find((profile) => !Object.hasOwn(pack.profiles, profile)) ?? "default"
+              return yield* new ToolFailure({ message: `Capability profile not found: ${input.id}/${missing}` })
+            }
+            runtimeCount = selectedRuntimes(pack, profiles).length
+            const dependencies = compatible(pack, profiles) ? yield* probe(pack, profiles) : []
+            return yield* activateLocked(context.sessionID, pack, profiles, dependencies, true, context.agent)
+          }),
+        ),
+      )
+      return CapabilityEvent.observeActivation(
+        eventBus,
+        { capabilityID: input.id, runtimeCount: () => runtimeCount },
+        authorization.pipe(Effect.andThen(operation)),
+      )
+    }
+
+    const disable = (input: DisableInput, context: ManagementContext) =>
+      Effect.suspend(() =>
+        locks.withLock(activationKey(context.sessionID, input.id))(
+          Effect.uninterruptible(
+            Effect.gen(function* () {
+              yield* state.disable({ sessionID: context.sessionID, id: input.id })
+              const key = activationKey(context.sessionID, input.id)
+              failures.delete(key)
+              // Existing advertised snapshots keep their registrations and clients until
+              // the next materialization boundary, where ensure releases stale holds.
+              return { id: input.id, state: "disabled" as const, nextTurn: true }
+            }),
+          ),
+        ),
+      )
+
+    const status = (input: StatusInput, context: StatusContext) =>
+      Effect.gen(function* () {
+        const installed = (yield* catalog.list()).filter((pack) => input.id === undefined || pack.id === input.id)
+        const activations = context.sessionID ? yield* state.status(context.sessionID) : []
+        const active = new Map(activations.map((item) => [item.id, item]))
+        const statuses = yield* Effect.forEach(installed, (pack) =>
+          Effect.gen(function* () {
+            const activation = active.get(pack.id)
+            const dependencies = yield* probe(pack)
+            const profiles = activation ? validProfiles(pack, activation.profiles) : undefined
+            const fingerprint = manifestFingerprint(pack)
+            const selectedRuntimeDefinitions = selectedRuntimes(pack, profiles ?? [])
+            const runtimeStatuses = yield* Effect.forEach(selectedRuntimeDefinitions, (definition) =>
+              runtime
+                .status(runtimeKey(pack.id, definition, fingerprint))
+                .pipe(Effect.map((status) => [definition.id, status] as const)),
+            )
+            const runtimeByID = new Map(runtimeStatuses)
+            const profileStatus = Object.fromEntries(
+              Object.keys(pack.profiles).map((profile) => {
+                const id = CapabilityManifest.ID.make(profile)
+                const selected = profiles?.includes(id) === true
+                return [
+                  id,
+                  statusForProfile(
+                    pack,
+                    id,
+                    dependencies,
+                    selected
+                      ? (pack.profiles[id]?.runtimes ?? []).flatMap((runtimeID) => {
+                          const status = runtimeByID.get(runtimeID)
+                          return status ? [status] : []
+                        })
+                      : [],
+                  ),
+                ]
+              }),
+            )
+            const remembered = context.sessionID ? failures.get(activationKey(context.sessionID, pack.id)) : undefined
+            const checkedAt = Math.max(
+              remembered?.checkedAt ?? 0,
+              ...dependencies.map((dependency) => dependency.checkedAt),
+              ...runtimeStatuses.map(([, status]) => status.updatedAt),
+            )
+            const invalidProfiles = activation !== undefined && profiles === undefined
+            const selectedStates = profiles?.map((profile) => profileStatus[profile]?.state) ?? []
+            const compatibleStates = Object.values(profileStatus)
+              .map((status) => status.state)
+              .filter((status) => status !== "unsupported")
+            const failed = selectedStates.includes("failed") || remembered !== undefined
+            const degraded = activation?.state === "degraded" || selectedStates.includes("degraded")
+            const inactiveState = compatibleStates.some((state) => state === "healthy" || state === "degraded")
+              ? ("installed" as const)
+              : compatibleStates.includes("failed")
+                ? ("failed" as const)
+                : ("unsupported" as const)
+            const currentState = !compatible(pack)
+              ? ("unsupported" as const)
+              : invalidProfiles
+                ? ("unavailable" as const)
+                : activation
+                  ? selectedStates.includes("unsupported")
+                    ? ("unsupported" as const)
+                    : failed
+                      ? ("failed" as const)
+                      : degraded
+                        ? ("degraded" as const)
+                        : ("active" as const)
+                  : inactiveState
+            const relevantProfileStatuses = activation
+              ? (profiles ?? []).flatMap((profile) => {
+                  const status = profileStatus[profile]
+                  return status ? [status] : []
+                })
+              : Object.values(profileStatus)
+            const remediation = [
+              ...(remembered?.remediation ?? []),
+              ...relevantProfileStatuses.flatMap((status) => status.remediation),
+              ...(invalidProfiles
+                ? [`Select profiles currently declared by ${pack.id}, or disable the stale activation.`]
+                : []),
+              ...(!compatible(pack)
+                ? [`Use ${pack.id} on one of its supported platforms: ${pack.platforms.join(", ")}.`]
+                : []),
+            ]
+            return {
+              id: pack.id,
+              state: currentState,
+              profiles: (activation?.profiles ?? []).map((profile) => CapabilityManifest.ID.make(profile)),
+              checkedAt: checkedAt || (yield* Clock.currentTimeMillis),
+              profileStatus,
+              remediation: [...new Set(remediation)],
+            }
+          }),
+        )
+        const unavailable = activations
+          .filter((activation) => !installed.some((pack) => pack.id === activation.id))
+          .filter((activation) => input.id === undefined || activation.id === input.id)
+          .map((activation) => ({
+            id: CapabilityManifest.ID.make(activation.id),
+            state: "unavailable" as const,
+            profiles: activation.profiles.map((profile) => CapabilityManifest.ID.make(profile)),
+            checkedAt: 0,
+            profileStatus: {},
+            remediation: [`Restore the installed manifest for ${activation.id}, or disable the stale activation.`],
+          }))
+        return {
+          capabilities: [...statuses, ...unavailable].toSorted((left, right) => left.id.localeCompare(right.id)),
+        }
+      })
+
     yield* hooks.register(ensure)
     yield* tools
       .register({
@@ -547,66 +773,7 @@ const layer = Layer.effectDiscard(
             profiles: RequestedProfiles.pipe(Schema.optional),
           }),
           output: EnableOutput,
-          execute: (input, context) => {
-            let runtimeCount = 0
-            const operation = authorize(context, "capability_enable", [input.id]).pipe(
-              Effect.andThen(
-                locks.withLock(activationKey(context.sessionID, input.id))(
-                  Effect.gen(function* () {
-                    const pack = yield* catalog.get(input.id)
-                    if (!pack) return yield* new ToolFailure({ message: `Capability manifest not found: ${input.id}` })
-                    const key = activationKey(context.sessionID, input.id)
-                    const durable = (yield* state.list(context.sessionID)).find(
-                      (activation) => activation.id === input.id,
-                    )
-                    const current = held.get(key)
-                    if (
-                      current &&
-                      (!durable ||
-                        current.fingerprint !== manifestFingerprint(pack) ||
-                        !sameProfiles(current.profiles, durable.profiles))
-                    ) {
-                      yield* dropHeld(key, current)
-                    }
-                    const aliases = input.profiles?.length ? input.profiles : undefined
-                    if (aliases && input.profile && (aliases.length !== 1 || aliases[0] !== input.profile)) {
-                      return yield* new ToolFailure({
-                        message: `Conflicting capability profile aliases: profile=${input.profile}, profiles=${aliases.join(",")}`,
-                      })
-                    }
-                    const available = Object.keys(pack.profiles).map((profile) => CapabilityManifest.ID.make(profile))
-                    const requested =
-                      aliases ??
-                      (input.profile
-                        ? [input.profile]
-                        : Object.hasOwn(pack.profiles, "default")
-                          ? [CapabilityManifest.ID.make("default")]
-                          : available.length === 1
-                            ? available
-                            : undefined)
-                    if (!requested) {
-                      return yield* new ToolFailure({
-                        message: `Capability ${input.id} requires a profile. Available profiles: ${available.join(", ")}`,
-                      })
-                    }
-                    const profiles = validProfiles(pack, requested)
-                    if (!profiles) {
-                      const missing = requested.find((profile) => !Object.hasOwn(pack.profiles, profile)) ?? "default"
-                      return yield* new ToolFailure({ message: `Capability profile not found: ${input.id}/${missing}` })
-                    }
-                    runtimeCount = selectedRuntimes(pack, profiles).length
-                    const dependencies = compatible(pack, profiles) ? yield* probe(pack, profiles) : []
-                    return yield* activateLocked(context.sessionID, pack, profiles, dependencies, true, context.agent)
-                  }),
-                ),
-              ),
-            )
-            return CapabilityEvent.observeActivation(
-              eventBus,
-              { capabilityID: input.id, runtimeCount: () => runtimeCount },
-              operation,
-            )
-          },
+          execute: (input, context) => enable(input, context, authorize(context, "capability_enable", [input.id])),
         }),
         capability_disable: Tool.make({
           description: "Disable one capability pack for this session and release its runtime references.",
@@ -617,22 +784,7 @@ const layer = Layer.effectDiscard(
             nextTurn: Schema.Boolean,
           }),
           execute: (input, context) =>
-            authorize(context, "capability_disable", [input.id]).pipe(
-              Effect.andThen(
-                locks.withLock(activationKey(context.sessionID, input.id))(
-                  Effect.uninterruptible(
-                    Effect.gen(function* () {
-                      yield* state.disable({ sessionID: context.sessionID, id: input.id })
-                      const key = activationKey(context.sessionID, input.id)
-                      const current = held.get(key)
-                      failures.delete(key)
-                      if (current) yield* dropHeld(key, current)
-                      return { id: input.id, state: "disabled" as const, nextTurn: true }
-                    }),
-                  ),
-                ),
-              ),
-            ),
+            authorize(context, "capability_disable", [input.id]).pipe(Effect.andThen(disable(input, context))),
         }),
         capability_status: Tool.make({
           description:
@@ -640,118 +792,7 @@ const layer = Layer.effectDiscard(
           input: Schema.Struct({ id: CapabilityManifest.ID.pipe(Schema.optional) }),
           output: Schema.Struct({ capabilities: Schema.Array(CapabilityStatus).check(Schema.isMaxLength(256)) }),
           execute: (input, context) =>
-            Effect.gen(function* () {
-              yield* authorize(context, "capability_status", [input.id ?? "*"])
-              const installed = (yield* catalog.list()).filter((pack) => input.id === undefined || pack.id === input.id)
-              const activations = yield* state.status(context.sessionID)
-              const active = new Map(activations.map((item) => [item.id, item]))
-              const statuses = yield* Effect.forEach(installed, (pack) =>
-                Effect.gen(function* () {
-                  const activation = active.get(pack.id)
-                  const dependencies = yield* probe(pack)
-                  const profiles = activation ? validProfiles(pack, activation.profiles) : undefined
-                  const fingerprint = manifestFingerprint(pack)
-                  const selectedRuntimeDefinitions = selectedRuntimes(pack, profiles ?? [])
-                  const runtimeStatuses = yield* Effect.forEach(selectedRuntimeDefinitions, (definition) =>
-                    runtime
-                      .status(runtimeKey(pack.id, definition, fingerprint))
-                      .pipe(Effect.map((status) => [definition.id, status] as const)),
-                  )
-                  const runtimeByID = new Map(runtimeStatuses)
-                  const profileStatus = Object.fromEntries(
-                    Object.keys(pack.profiles).map((profile) => {
-                      const id = CapabilityManifest.ID.make(profile)
-                      const selected = profiles?.includes(id) === true
-                      return [
-                        id,
-                        statusForProfile(
-                          pack,
-                          id,
-                          dependencies,
-                          selected
-                            ? (pack.profiles[id]?.runtimes ?? []).flatMap((runtimeID) => {
-                                const status = runtimeByID.get(runtimeID)
-                                return status ? [status] : []
-                              })
-                            : [],
-                        ),
-                      ]
-                    }),
-                  )
-                  const remembered = failures.get(activationKey(context.sessionID, pack.id))
-                  const checkedAt = Math.max(
-                    remembered?.checkedAt ?? 0,
-                    ...dependencies.map((dependency) => dependency.checkedAt),
-                    ...runtimeStatuses.map(([, status]) => status.updatedAt),
-                  )
-                  const invalidProfiles = activation !== undefined && profiles === undefined
-                  const selectedStates = profiles?.map((profile) => profileStatus[profile]?.state) ?? []
-                  const compatibleStates = Object.values(profileStatus)
-                    .map((status) => status.state)
-                    .filter((status) => status !== "unsupported")
-                  const failed = selectedStates.includes("failed") || remembered !== undefined
-                  const degraded = activation?.state === "degraded" || selectedStates.includes("degraded")
-                  const inactiveState = compatibleStates.some((state) => state === "healthy" || state === "degraded")
-                    ? ("installed" as const)
-                    : compatibleStates.includes("failed")
-                      ? ("failed" as const)
-                      : ("unsupported" as const)
-                  const currentState = !compatible(pack)
-                    ? ("unsupported" as const)
-                    : invalidProfiles
-                      ? ("unavailable" as const)
-                      : activation
-                        ? selectedStates.includes("unsupported")
-                          ? ("unsupported" as const)
-                          : failed
-                            ? ("failed" as const)
-                            : degraded
-                              ? ("degraded" as const)
-                              : ("active" as const)
-                        : inactiveState
-                  const relevantProfileStatuses = activation
-                    ? (profiles ?? []).flatMap((profile) => {
-                        const status = profileStatus[profile]
-                        return status ? [status] : []
-                      })
-                    : Object.values(profileStatus)
-                  const remediation = [
-                    ...(remembered?.remediation ?? []),
-                    ...relevantProfileStatuses.flatMap((status) => status.remediation),
-                    ...(invalidProfiles
-                      ? [`Select profiles currently declared by ${pack.id}, or disable the stale activation.`]
-                      : []),
-                    ...(!compatible(pack)
-                      ? [`Use ${pack.id} on one of its supported platforms: ${pack.platforms.join(", ")}.`]
-                      : []),
-                  ]
-                  return {
-                    id: pack.id,
-                    state: currentState,
-                    profiles: (activation?.profiles ?? []).map((profile) => CapabilityManifest.ID.make(profile)),
-                    checkedAt: checkedAt || (yield* Clock.currentTimeMillis),
-                    profileStatus,
-                    remediation: [...new Set(remediation)],
-                  }
-                }),
-              )
-              const unavailable = activations
-                .filter((activation) => !installed.some((pack) => pack.id === activation.id))
-                .filter((activation) => input.id === undefined || activation.id === input.id)
-                .map((activation) => ({
-                  id: CapabilityManifest.ID.make(activation.id),
-                  state: "unavailable" as const,
-                  profiles: activation.profiles.map((profile) => CapabilityManifest.ID.make(profile)),
-                  checkedAt: 0,
-                  profileStatus: {},
-                  remediation: [
-                    `Restore the installed manifest for ${activation.id}, or disable the stale activation.`,
-                  ],
-                }))
-              return {
-                capabilities: [...statuses, ...unavailable].toSorted((left, right) => left.id.localeCompare(right.id)),
-              }
-            }),
+            authorize(context, "capability_status", [input.id ?? "*"]).pipe(Effect.andThen(status(input, context))),
         }),
       })
       .pipe(Effect.orDie)
@@ -759,11 +800,20 @@ const layer = Layer.effectDiscard(
     yield* Effect.addFinalizer(() =>
       Effect.forEach(held.values(), release, { concurrency: "unbounded", discard: true }),
     )
+    return Service.of({
+      refresh: (reference) =>
+        Effect.sync(() => {
+          referenceVersions.set(reference, (referenceVersions.get(reference) ?? 0) + 1)
+        }),
+      enable: (input) => enable(input, input),
+      disable: (input) => disable(input, input),
+      status: (sessionID) => status({}, { sessionID }),
+    })
   }),
 )
 
 export const node = makeLocationNode({
-  name: "tool/capability",
+  service: Service,
   layer,
   deps: [
     ToolRegistry.node,
@@ -800,7 +850,7 @@ function sessionFromActivationKey(key: string) {
   return SessionSchema.ID.make(key.slice(0, key.indexOf("\u0000")))
 }
 
-function manifestFingerprint(pack: CapabilityCatalog.Pack) {
+function originalManifestFingerprint(pack: CapabilityCatalog.Pack) {
   return Hash.sha256(
     JSON.stringify({
       id: pack.id,

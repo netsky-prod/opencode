@@ -13,6 +13,7 @@ import { Effect, Exit } from "effect"
 import { CapabilityRuntime } from "../../src/capability/runtime"
 import { locationServices } from "../../src/location-services"
 import { MCP } from "../../src/mcp"
+import { McpAuth } from "../../src/mcp/auth"
 import { testEffect } from "../lib/effect"
 import { AppNodeBuilderV1 } from "../../src/effect/app-node-builder-v1"
 import { InstanceRef } from "../../src/effect/instance-ref"
@@ -21,7 +22,83 @@ import { Location } from "@opencode-ai/core/location"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 
 const stdioFixture = path.join(import.meta.dir, "../fixture/mcp-lifecycle-stdio.ts")
-const it = testEffect(LayerNode.compile(LayerNode.group([EventV2.node, MCP.node, CapabilityRuntime.node])))
+const it = testEffect(
+  LayerNode.compile(LayerNode.group([EventV2.node, MCP.node, McpAuth.node, CapabilityRuntime.node])),
+)
+
+it.instance("does not report an unavailable always-on MCP reference as active", () =>
+  Effect.gen(function* () {
+    const mcp = yield* MCP.Service
+    const runtime = yield* CoreCapabilityRuntime.Service
+    yield* mcp.add("unavailable", { type: "local", command: ["unused"] }, { connect: false })
+    const result = yield* runtime
+      .acquire("browser/playwright", definition("", { command: [], mcp: "unavailable" }))
+      .pipe(Effect.exit)
+    expect(Exit.isFailure(result)).toBe(true)
+    expect((yield* mcp.connection("unavailable"))?.status).toBe("disabled")
+  }),
+)
+
+it.instance("a remote configured reference invokes tools with existing OAuth credentials under the original name", () =>
+  Effect.gen(function* () {
+    const server = yield* serveMcp(
+      [{ name: "ping", inputSchema: { type: "object" } }],
+      "called",
+      "Bearer reference-only-secret",
+    )
+    const auth = yield* McpAuth.Service
+    const mcp = yield* MCP.Service
+    const runtime = yield* CoreCapabilityRuntime.Service
+    yield* auth.set("oauth-reference", { tokens: { accessToken: "reference-only-secret" } }, server.url)
+    yield* Effect.addFinalizer(() => auth.remove("oauth-reference"))
+    yield* mcp.add(
+      "oauth-reference",
+      { type: "remote", url: server.url, exposure: "pack-only", timeout: 2000 },
+      { hidden: true, connect: false },
+    )
+    const handle = yield* runtime.acquire("browser/playwright", definition("", { command: [], mcp: "oauth-reference" }))
+    expect(yield* CapabilityRuntime.tools(handle)[0].call({})).toMatchObject({
+      content: [{ type: "text", text: "called:ping" }],
+    })
+    expect(CapabilityRuntime.tools(handle)[0].permission?.action).toBe("oauth-reference_ping")
+    expect(Object.keys(yield* mcp.tools())).toEqual([])
+    expect(JSON.stringify(yield* runtime.status("browser/playwright"))).not.toContain("reference-only-secret")
+    yield* runtime.release(handle)
+  }),
+)
+
+it.instance(
+  "starts pack-only configured references lazily and keeps always-on references schema-free",
+  () =>
+    Effect.gen(function* () {
+      const mcp = yield* MCP.Service
+      const runtime = yield* CoreCapabilityRuntime.Service
+      expect(Object.keys(yield* mcp.tools())).toEqual(["visible_current_directory"])
+      expect((yield* mcp.connection("private"))?.status).toBe("disabled")
+      const handle = yield* runtime.acquire("browser/playwright", definition("", { command: [], mcp: "private" }))
+      expect(CapabilityRuntime.tools(handle).map((tool) => tool.name)).toEqual(["private_current_directory"])
+      const shared = yield* runtime.acquire("other/playwright", definition("", { command: [], mcp: "private" }))
+      expect(CapabilityRuntime.tools(shared).map((tool) => tool.name)).toEqual(["private_current_directory"])
+      yield* runtime.release(shared)
+      expect(Object.keys(yield* mcp.tools())).toEqual(["visible_current_directory"])
+      yield* runtime.release(handle)
+      const visible = yield* runtime.acquire(
+        "browser/playwright#visible",
+        definition("", { command: [], mcp: "visible" }),
+      )
+      expect(CapabilityRuntime.tools(visible)).toEqual([])
+      yield* runtime.release(visible)
+      expect((yield* mcp.connection("visible"))?.status).toBe("connected")
+    }),
+  {
+    config: {
+      mcp: {
+        private: { type: "local", command: [process.execPath, stdioFixture], exposure: "pack-only" },
+        visible: { type: "local", command: [process.execPath, stdioFixture] },
+      },
+    },
+  },
+)
 
 it.instance("binds host MCP context for a Core background location without a legacy request", () =>
   Effect.gen(function* () {

@@ -15,6 +15,18 @@ import type {
   AuthRemoveResponses,
   AuthSetErrors,
   AuthSetResponses,
+  CapabilityAttachMcpErrors,
+  CapabilityAttachMcpResponses,
+  CapabilityCheckMcpErrors,
+  CapabilityCheckMcpResponses,
+  CapabilityDisableErrors,
+  CapabilityDisableResponses,
+  CapabilityEnableErrors,
+  CapabilityEnableResponses,
+  CapabilityListErrors,
+  CapabilityListResponses,
+  CapabilitySaveMcpErrors,
+  CapabilitySaveMcpResponses,
   CommandListErrors,
   CommandListResponses,
   Config as Config3,
@@ -108,6 +120,7 @@ import type {
   McpDisconnectErrors,
   McpDisconnectResponses,
   McpLocalConfig,
+  McpOAuthConfig,
   McpRemoteConfig,
   McpStatusErrors,
   McpStatusResponses,
@@ -2526,6 +2539,269 @@ export class Mcp extends HeyApiClient {
   private _auth?: Auth2
   get auth(): Auth2 {
     return (this._auth ??= new Auth2({ client: this.client }))
+  }
+}
+
+export class Capability extends HeyApiClient {
+  /**
+   * List capability packs and configured MCP servers
+   */
+  public list<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      sessionID?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "query", key: "sessionID" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<CapabilityListResponses, CapabilityListErrors, ThrowOnError>({
+      url: "/capability",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Enable a capability directly for a session
+   */
+  public enable<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      sessionID?: string
+      id?: string
+      profiles?: Array<string>
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "sessionID" },
+            { in: "body", key: "id" },
+            { in: "body", key: "profiles" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<CapabilityEnableResponses, CapabilityEnableErrors, ThrowOnError>({
+      url: "/capability/enable",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Disable a capability directly for a session
+   */
+  public disable<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      sessionID?: string
+      id?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "sessionID" },
+            { in: "body", key: "id" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<CapabilityDisableResponses, CapabilityDisableErrors, ThrowOnError>({
+      url: "/capability/disable",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Persist a scoped MCP configuration patch
+   */
+  public saveMcp<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      name?: string
+      scope?: "global" | "project"
+      revision?: string
+      config?:
+        | {
+            type: "local"
+            command?: Array<string>
+            cwd?: string
+            environment?: {
+              [key: string]: string
+            }
+            enabled?: boolean
+            timeout?: number
+          }
+        | {
+            type: "remote"
+            url?: string
+            headers?: {
+              [key: string]: string
+            }
+            oauth?: McpOAuthConfig | false
+            enabled?: boolean
+            timeout?: number
+          }
+      exposure?: "always-on" | "pack-only"
+      confirmExposureChange?: boolean
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "name" },
+            { in: "body", key: "scope" },
+            { in: "body", key: "revision" },
+            { in: "body", key: "config" },
+            { in: "body", key: "exposure" },
+            { in: "body", key: "confirmExposureChange" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<CapabilitySaveMcpResponses, CapabilitySaveMcpErrors, ThrowOnError>({
+      url: "/capability/mcp",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Check a configured MCP using an isolated connection
+   */
+  public checkMcp<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      name?: string
+      scope?: "global" | "project"
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "name" },
+            { in: "body", key: "scope" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<CapabilityCheckMcpResponses, CapabilityCheckMcpErrors, ThrowOnError>({
+      url: "/capability/mcp/check",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Attach a configured MCP by reference to a user capability pack
+   */
+  public attachMcp<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      name?: string
+      mcpScope?: "global" | "project"
+      mcpRevision?: string
+      scope?: "global" | "project"
+      packID?: string
+      profile?: string
+      description?: string
+      revision?: string
+      confirmExposureChange?: boolean
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "name" },
+            { in: "body", key: "mcpScope" },
+            { in: "body", key: "mcpRevision" },
+            { in: "body", key: "scope" },
+            { in: "body", key: "packID" },
+            { in: "body", key: "profile" },
+            { in: "body", key: "description" },
+            { in: "body", key: "revision" },
+            { in: "body", key: "confirmExposureChange" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<CapabilityAttachMcpResponses, CapabilityAttachMcpErrors, ThrowOnError>(
+      {
+        url: "/capability/mcp/attach",
+        ...options,
+        ...params,
+        headers: {
+          "Content-Type": "application/json",
+          ...options?.headers,
+          ...params.headers,
+        },
+      },
+    )
   }
 }
 
@@ -7167,6 +7443,11 @@ export class OpencodeClient extends HeyApiClient {
   private _mcp?: Mcp
   get mcp(): Mcp {
     return (this._mcp ??= new Mcp({ client: this.client }))
+  }
+
+  private _capability?: Capability
+  get capability(): Capability {
+    return (this._capability ??= new Capability({ client: this.client }))
   }
 
   private _project?: Project

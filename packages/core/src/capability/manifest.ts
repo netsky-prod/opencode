@@ -23,7 +23,9 @@ export type Skill = typeof Skill.Type
 export const Runtime = Schema.Struct({
   id: ID,
   type: Schema.Literals(["mcp", "cli"]),
-  command: Schema.Array(Schema.NonEmptyString),
+  command: Schema.Array(Schema.NonEmptyString).pipe(Schema.optional, Schema.withDecodingDefault(Effect.succeed([]))),
+  // Configured MCP identity only: never copy resolved credentials into a pack.
+  mcp: Schema.optional(Schema.String.check(Schema.isPattern(/^[a-zA-Z][a-zA-Z0-9_-]{0,79}$/))),
   // Upstream MCP names are discovered by the adapter, which must canonicalize them and reject collisions then.
   // `tools` covers only manifest-owned names known at decode time.
   tools: Schema.Array(Schema.NonEmptyString).pipe(Schema.optional, Schema.withDecodingDefault(Effect.succeed([]))),
@@ -94,6 +96,10 @@ function validate(manifest: Manifest) {
   const runtimes = new Set<string>()
   const names = new Set<string>()
   for (const runtime of manifest.runtimes) {
+    if (runtime.mcp && (runtime.type !== "mcp" || (runtime.command?.length ?? 0) > 0 || runtime.environment)) {
+      throw new Error("An MCP reference cannot also contain a command or environment")
+    }
+    if (!runtime.mcp && !runtime.command?.length) throw new Error("A runtime requires a command or MCP reference")
     if (runtimes.has(runtime.id)) throw new Error(`Duplicate runtime ID: ${runtime.id}`)
     runtimes.add(runtime.id)
     for (const tool of runtime.tools ?? []) {

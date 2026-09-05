@@ -35,6 +35,7 @@ const OAuth = Schema.Struct({
 const Server = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("local"),
+    exposure: Schema.optional(Schema.Literals(["always-on", "pack-only"])),
     command: Schema.Array(Schema.String),
     cwd: Schema.optional(Schema.String),
     environment: Schema.optional(Schema.Record(Schema.String, Schema.String)),
@@ -44,6 +45,7 @@ const Server = Schema.Union([
   }),
   Schema.Struct({
     type: Schema.Literal("remote"),
+    exposure: Schema.optional(Schema.Literals(["always-on", "pack-only"])),
     url: Schema.String,
     headers: Schema.optional(Schema.Record(Schema.String, Schema.String)),
     oauth: Schema.optional(Schema.Union([OAuth, Schema.Literal(false)])),

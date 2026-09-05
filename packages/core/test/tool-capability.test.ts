@@ -235,7 +235,7 @@ const activatedKeys: string[] = []
 const releasedKeys: string[] = []
 
 const runtime = CapabilityRuntime.Service.of({
-  acquire: (key, definition) => Effect.succeed(makeReference(key, definition.command[0])),
+  acquire: (key, definition) => Effect.succeed(makeReference(key, definition.command?.[0])),
   release: (released) =>
     Effect.sync(() => {
       events.push("runtime:release")
@@ -251,7 +251,7 @@ const runtime = CapabilityRuntime.Service.of({
             state: "active",
             references:
               runtimeReferences?.(definitions) ??
-              definitions.map(({ key, definition }) => makeReference(key, definition.command[0] ?? definition.id)),
+              definitions.map(({ key, definition }) => makeReference(key, definition.command?.[0] ?? definition.id)),
           } as const)
     }),
   status: () =>
@@ -375,6 +375,80 @@ const callForSession = (currentSessionID: SessionV2.ID, name: string, input: unk
 let yieldRegistry: ToolRegistry.Interface
 
 describe("CapabilityTool", () => {
+  it.effect("refreshing a configured MCP invalidates the held runtime at the next materialization", () =>
+    Effect.gen(function* () {
+      reset()
+      catalogPacks = [{ ...pack(0), runtimes: [{ ...pack(0).runtimes[0], command: [], mcp: "configured" }] }]
+      yieldRegistry = yield* ToolRegistry.Service
+      const manager = yield* CapabilityTool.Service
+      yield* manager.enable({ sessionID, id: CapabilityManifest.ID.make("browser") })
+      const previous = [...activatedKeys]
+      yield* manager.refresh("configured")
+      yield* yieldRegistry.materialize(sessionID)
+      expect(activatedKeys).toHaveLength(2)
+      expect(activatedKeys[1]).not.toBe(previous[0])
+      expect(releasedKeys).toContain(previous[0])
+    }),
+  )
+
+  it.effect("a referenced MCP retains its original permission resource at execution", () =>
+    Effect.gen(function* () {
+      reset()
+      runtimeReferences = (definitions) =>
+        definitions.map(({ key }) => {
+          const reference = makeReference(key)
+          return {
+            ...reference,
+            value: {
+              tools: reference.value!.tools.map((tool) => ({
+                ...tool,
+                permission: { action: "configured_navigate", resource: "mcp:configured:configured_navigate" },
+              })),
+            },
+          }
+        })
+      yieldRegistry = yield* ToolRegistry.Service
+      yield* call("capability_enable", { id: "browser" })
+      deniedResource = "mcp:configured:configured_navigate"
+      const result = yield* call("browser_playwright_navigate", { url: "https://example.com" })
+      expect(result).toMatchObject({ type: "error" })
+      expect(runtimeCalls).toBe(0)
+    }),
+  )
+
+  it.effect("human management shares lifecycle and session isolation without a tool invocation", () =>
+    Effect.gen(function* () {
+      reset()
+      yieldRegistry = yield* ToolRegistry.Service
+      const manager = yield* CapabilityTool.Service
+      const other = SessionV2.ID.make("ses_human_other")
+      expect(yield* manager.enable({ sessionID, id: CapabilityManifest.ID.make("browser") })).toMatchObject({
+        state: "active",
+        nextTurn: true,
+      })
+      expect(names(yield* yieldRegistry.materialize(sessionID))).toContain("browser_playwright_navigate")
+      expect(names(yield* yieldRegistry.materialize(other))).not.toContain("browser_playwright_navigate")
+      expect(permissionRequests).toEqual([])
+      const advertised = yield* yieldRegistry.materialize(sessionID)
+      yield* manager.disable({ sessionID, id: CapabilityManifest.ID.make("browser") })
+      expect(events).not.toContain("runtime:release")
+      expect(
+        yield* advertised.settle({
+          sessionID,
+          ...identity,
+          call: {
+            type: "tool-call",
+            id: "call-before-disable",
+            name: "browser_playwright_navigate",
+            input: { url: "https://example.com" },
+          },
+        }),
+      ).toMatchObject({ result: { type: "json" } })
+      expect(names(yield* yieldRegistry.materialize(sessionID))).not.toContain("browser_playwright_navigate")
+      expect(events).toContain("runtime:release")
+    }),
+  )
+
   test("declares the host capability runtime adapter as an unbound requirement", () => {
     expect(LayerNode.hasUnbound(CapabilityTool.node, CapabilityRuntime.node)).toBe(true)
   })
@@ -968,13 +1042,14 @@ describe("CapabilityTool", () => {
         type: "json",
         value: { id: "browser", state: "disabled", nextTurn: true },
       })
-      expect(events).toEqual(["permission:capability_disable", "persist:disable", "runtime:release"])
+      expect(events).toEqual(["permission:capability_disable", "persist:disable"])
       expect(permissionRequests.at(-1)).toMatchObject({
         action: "capability_disable",
         resources: ["browser"],
         save: ["browser"],
       })
       expect(names(yield* yieldRegistry.materialize(sessionID))).not.toContain("browser_playwright_navigate")
+      expect(events).toContain("runtime:release")
     }),
   )
 

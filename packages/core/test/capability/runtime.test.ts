@@ -112,7 +112,7 @@ describe("CapabilityRuntime", () => {
       const runtime = yield* CapabilityRuntime.make({
         start: (_key, definition) =>
           Effect.sync(() => {
-            const command = definition.command[0]!
+            const command = definition.command?.[0]!
             events.push(`start:${command}`)
             return {
               value: { tools: [] },

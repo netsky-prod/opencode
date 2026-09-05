@@ -13,6 +13,7 @@ export class Timeout extends Schema.Class<Timeout>("ConfigV2.MCP.Timeout")({
 }) {}
 
 export class Local extends Schema.Class<Local>("ConfigV2.MCP.Local")({
+  exposure: Schema.optional(Schema.Literals(["always-on", "pack-only"])),
   type: Schema.Literal("local"),
   command: Schema.String.pipe(Schema.Array),
   cwd: Schema.String.pipe(Schema.optional).annotate({
@@ -32,6 +33,7 @@ export class OAuth extends Schema.Class<OAuth>("ConfigV2.MCP.OAuth")({
 }) {}
 
 export class Remote extends Schema.Class<Remote>("ConfigV2.MCP.Remote")({
+  exposure: Schema.optional(Schema.Literals(["always-on", "pack-only"])),
   type: Schema.Literal("remote"),
   url: Schema.String,
   headers: Schema.Record(Schema.String, Schema.String).pipe(Schema.optional),

@@ -4,6 +4,7 @@ import { Schema } from "effect"
 import { PositiveInt } from "../../schema"
 
 export const Local = Schema.Struct({
+  exposure: Schema.optional(Schema.Literals(["always-on", "pack-only"])),
   type: Schema.Literal("local").annotate({ description: "Type of MCP server connection" }),
   command: Schema.mutable(Schema.Array(Schema.String)).annotate({
     description: "Command and arguments to run the MCP server",
@@ -42,6 +43,7 @@ export const OAuth = Schema.Struct({
 export type OAuth = Schema.Schema.Type<typeof OAuth>
 
 export const Remote = Schema.Struct({
+  exposure: Schema.optional(Schema.Literals(["always-on", "pack-only"])),
   type: Schema.Literal("remote").annotate({ description: "Type of MCP server connection" }),
   url: Schema.String.annotate({ description: "URL of the remote MCP server" }),
   enabled: Schema.optional(Schema.Boolean).annotate({

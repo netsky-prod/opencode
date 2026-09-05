@@ -23,7 +23,11 @@ export class SchemaErrorMiddleware extends HttpApiMiddleware.Service<SchemaError
 ) {}
 
 export const schemaErrorLayer = HttpApiMiddleware.layerSchemaErrorTransform(SchemaErrorMiddleware, (error, context) => {
-  const reason = truncateReason(error.cause.message)
+  // Manager payloads include credential fields; even a mistyped field must not
+  // be reflected into the response or the schema-rejection log.
+  const reason = context.endpoint.path.startsWith("/capability")
+    ? "Invalid capability manager request; check the field names and value types"
+    : truncateReason(error.cause.message)
   const response = context.endpoint.path.startsWith("/api/")
     ? Effect.fail(
         new InvalidRequestError({
