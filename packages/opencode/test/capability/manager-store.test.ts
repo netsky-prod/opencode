@@ -3,6 +3,8 @@ import fs from "node:fs/promises"
 import { expect, test } from "bun:test"
 import { parse } from "jsonc-parser"
 import { CapabilityStore } from "../../src/capability/store"
+import { Flock } from "@opencode-ai/core/util/flock"
+import { Hash } from "@opencode-ai/core/util/hash"
 import { tmpdir } from "../fixture/fixture"
 
 test("MCP edits preserve JSONC, omitted credentials, scope and reject stale revisions", async () => {
@@ -283,10 +285,10 @@ test("attachment rejects a MCP changed after inventory was displayed", async () 
   expect(await Bun.file(path.join(tmp.path, ".opencode/capabilities/custom/capability.json")).exists()).toBe(false)
 })
 
-test("dead process locks recover but live process locks remain exclusive", async () => {
+test("manager writes honor a live process-safe file lease", async () => {
   await using tmp = await tmpdir()
   const store = CapabilityStore.make({ globalDirectory: path.join(tmp.path, "global"), projectDirectory: tmp.path })
-  const file = path.join(tmp.path, "opencode.jsonc.manager-lock")
+  const file = path.join(tmp.path, "opencode.jsonc")
   const operation = {
     name: "local",
     scope: "project" as const,
@@ -294,12 +296,47 @@ test("dead process locks recover but live process locks remain exclusive", async
     exposure: "pack-only" as const,
     config: { type: "local" as const, command: ["node"] },
   }
-  await Bun.write(file, JSON.stringify({ pid: process.pid, token: "live" }))
-  await expect(store.save(operation)).rejects.toThrow("being edited")
-  // Obtain a real exited child PID instead of assuming an arbitrary PID is absent.
-  const child = Bun.spawn([process.execPath, "-e", ""], { stdout: "ignore", stderr: "ignore" })
-  await child.exited
-  await Bun.write(file, JSON.stringify({ pid: child.pid, token: "dead" }))
-  expect((await store.save(operation)).name).toBe("local")
-  expect(await Bun.file(file).exists()).toBe(false)
+  const lease = await Flock.acquire(`capability-manager:${file}`, { dir: tmp.path })
+  const pending = store.save(operation)
+  try {
+    expect(await Promise.race([pending.then(() => "wrote"), Bun.sleep(200).then(() => "held")])).toBe("held")
+    expect(await Bun.file(file).exists()).toBe(false)
+  } finally {
+    await lease.release()
+    await pending
+  }
+  expect((await store.inventory()).mcps[0].name).toBe("local")
 })
+
+test("concurrent processes reclaim an expired manager lease without accepting stale writes", async () => {
+  await using tmp = await tmpdir()
+  const file = path.join(tmp.path, "opencode.jsonc")
+  const lock = path.join(tmp.path, Hash.fast(`capability-manager:${file}`) + ".lock")
+  await fs.mkdir(lock)
+  await Bun.write(path.join(lock, "heartbeat"), "")
+  await Bun.write(path.join(lock, "meta.json"), JSON.stringify({ token: "exited-owner", pid: 0 }))
+  const expired = new Date(Date.now() - 120_000)
+  await fs.utimes(path.join(lock, "heartbeat"), expired, expired)
+  const workers = Array.from({ length: 8 }, (_, index) =>
+    Bun.spawn(
+      [
+        process.execPath,
+        "-e",
+        `
+    import { CapabilityStore } from ${JSON.stringify(path.resolve(import.meta.dir, "../../src/capability/store.ts"))};
+    const store = CapabilityStore.make(${JSON.stringify({ globalDirectory: path.join(tmp.path, "global"), projectDirectory: tmp.path })});
+    try {
+      await store.save({ name: "writer${index}", scope: "project", revision: "", exposure: "pack-only", config: { type: "local", command: ["node"] } });
+      process.exit(0);
+    } catch (error) { process.exit(error.message.includes("changed") ? 2 : 3); }
+  `,
+      ],
+      { stdout: "ignore", stderr: "pipe" },
+    ),
+  )
+  const outcomes = await Promise.all(workers.map((worker) => worker.exited))
+  expect(outcomes.filter((code) => code === 0)).toHaveLength(1)
+  expect(outcomes.filter((code) => code === 2)).toHaveLength(7)
+  expect(Object.keys(JSON.parse(await Bun.file(file).text()).mcp)).toHaveLength(1)
+  expect(await fs.stat(lock).catch(() => undefined)).toBeUndefined()
+}, 15_000)

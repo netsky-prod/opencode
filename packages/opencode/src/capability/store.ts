@@ -9,6 +9,7 @@ import { CapabilityManifest } from "@opencode-ai/core/capability/manifest"
 import { ConfigMCPV1 } from "@opencode-ai/core/v1/config/mcp"
 import { CapabilitySchema } from "./schema"
 import { ConfigV2Compat } from "../config/v2-compat"
+import { Flock } from "@opencode-ai/core/util/flock"
 
 type Scope = typeof CapabilitySchema.Scope.Type
 type Document = { file: string; text: string; revision: string; value: Record<string, unknown> }
@@ -323,67 +324,16 @@ async function assertContained(file: string, root: string) {
 }
 
 async function locked<T>(file: string, operation: () => Promise<T>): Promise<T> {
-  await fs.mkdir(path.dirname(file), { recursive: true })
-  const target = file + ".manager-lock"
-  const token = crypto.randomUUID()
-  const open = async () => {
-    const staged = target + "." + token
-    const handle = await fs.open(staged, "wx", 0o600)
-    try {
-      await handle.writeFile(JSON.stringify({ pid: process.pid, token }), "utf8")
-      await handle.sync()
-      // Publish complete ownership metadata atomically; a crash cannot leave an
-      // empty lock between exclusive creation and writing the owning PID.
-      await fs.link(staged, target)
-      return handle
-    } catch (error) {
-      await handle.close()
-      throw error
-    } finally {
-      await fs.unlink(staged).catch(() => {})
-    }
-  }
-  const lock = await open().catch(async () => {
-    // Only reclaim a well-formed lock whose owning process demonstrably exited.
-    // Unknown/permission-denied PIDs and incomplete metadata remain locked.
-    const before = await fs.lstat(target).catch(() => undefined)
-    const owner = await fs
-      .readFile(target, "utf8")
-      .then((text) => JSON.parse(text))
-      .catch(() => undefined)
-    if (
-      before &&
-      !before.isSymbolicLink() &&
-      Number.isSafeInteger(owner?.pid) &&
-      owner.pid > 0 &&
-      typeof owner.token === "string"
-    ) {
-      const dead = (() => {
-        try {
-          process.kill(owner.pid, 0)
-          return false
-        } catch (error) {
-          return (error as NodeJS.ErrnoException).code === "ESRCH"
-        }
-      })()
-      const current = await fs.lstat(target).catch(() => undefined)
-      if (dead && current?.ino === before.ino && current?.mtimeMs === before.mtimeMs) {
-        await fs.unlink(target)
-        return open()
-      }
-    }
+  // Reuse the repository's cross-process lease, including heartbeat and exclusive
+  // stale-breaker ownership. Inode-check + unlink is not a compare-and-swap.
+  const lease = await Flock.acquire(`capability-manager:${file}`, {
+    dir: path.dirname(file),
+    timeoutMs: 5000,
+  }).catch(() => {
     throw new CapabilitySchema.Error({ message: "Configuration is being edited; retry after refreshing" })
   })
-  try {
-    return await operation()
-  } finally {
-    await lock.close()
-    const owner = await fs
-      .readFile(target, "utf8")
-      .then((text) => JSON.parse(text))
-      .catch(() => undefined)
-    if (owner?.token === token) await fs.unlink(target)
-  }
+  await using _ = lease
+  return await operation()
 }
 
 async function atomic(doc: Document, text: string) {
