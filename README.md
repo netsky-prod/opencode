@@ -1,137 +1,83 @@
-<p align="center">
-  <a href="https://opencode.ai">
-    <picture>
-      <source srcset="packages/console/app/src/asset/logo-ornate-dark.svg" media="(prefers-color-scheme: dark)">
-      <source srcset="packages/console/app/src/asset/logo-ornate-light.svg" media="(prefers-color-scheme: light)">
-      <img src="packages/console/app/src/asset/logo-ornate-light.svg" alt="OpenCode logo">
-    </picture>
-  </a>
-</p>
-<p align="center">The open source AI coding agent.</p>
-<p align="center">
-  <a href="https://opencode.ai/discord"><img alt="Discord" src="https://img.shields.io/discord/1391832426048651334?style=flat-square&label=discord" /></a>
-  <a href="https://www.npmjs.com/package/opencode-ai"><img alt="npm" src="https://img.shields.io/npm/v/opencode-ai?style=flat-square" /></a>
-  <a href="https://github.com/anomalyco/opencode/actions/workflows/publish.yml"><img alt="Build status" src="https://img.shields.io/github/actions/workflow/status/anomalyco/opencode/publish.yml?style=flat-square&branch=dev" /></a>
-</p>
+<p align="center"><img src="docs/assets/netsky-code.svg" width="520" alt="Netsky Code"></p>
 
-<p align="center">
-  <a href="README.md">English</a> |
-  <a href="README.zh.md">简体中文</a> |
-  <a href="README.zht.md">繁體中文</a> |
-  <a href="README.ko.md">한국어</a> |
-  <a href="README.de.md">Deutsch</a> |
-  <a href="README.es.md">Español</a> |
-  <a href="README.fr.md">Français</a> |
-  <a href="README.it.md">Italiano</a> |
-  <a href="README.da.md">Dansk</a> |
-  <a href="README.ja.md">日本語</a> |
-  <a href="README.pl.md">Polski</a> |
-  <a href="README.ru.md">Русский</a> |
-  <a href="README.bs.md">Bosanski</a> |
-  <a href="README.ar.md">العربية</a> |
-  <a href="README.no.md">Norsk</a> |
-  <a href="README.br.md">Português (Brasil)</a> |
-  <a href="README.th.md">ไทย</a> |
-  <a href="README.tr.md">Türkçe</a> |
-  <a href="README.uk.md">Українська</a> |
-  <a href="README.bn.md">বাংলা</a> |
-  <a href="README.gr.md">Ελληνικά</a> |
-  <a href="README.vi.md">Tiếng Việt</a>
-</p>
+<p align="center">An open-source agent harness for building, researching, and getting work done.</p>
+<p align="center"><a href="README.ru.md">Русский</a> · <a href="https://github.com/netsky-prod/opencode/releases">Releases</a> · <a href="docs/capabilities.md">Capabilities</a> · <a href="docs/loop.md">Loops</a></p>
 
-[![OpenCode Terminal UI](packages/web/src/assets/lander/screenshot.png)](https://opencode.ai)
+Netsky Code is an independently maintained harness built on [OpenCode](https://github.com/anomalyco/opencode). It keeps the terminal-first workflow, model choice, tools, skills, and MCP ecosystem, and adds session-scoped capability packs and durable continuation.
 
----
+**Your model. Your runtime. Your tools.** Use a local endpoint, your own GPU server, or a supported hosted provider. The harness does not include model weights or a hosted inference subscription.
 
-### Installation
+## Install
 
-```bash
-# YOLO
-curl -fsSL https://opencode.ai/install | bash
-
-# Package managers
-npm i -g opencode-ai@latest        # or bun/pnpm/yarn
-scoop install opencode             # Windows
-choco install opencode             # Windows
-brew install anomalyco/tap/opencode # macOS and Linux (recommended, always up to date)
-brew install opencode              # macOS and Linux (official brew formula, updated less)
-sudo pacman -S opencode            # Arch Linux (Stable)
-paru -S opencode-bin               # Arch Linux (Latest from AUR)
-mise use -g opencode               # Any OS
-nix run nixpkgs#opencode           # or github:anomalyco/opencode for latest dev branch
-```
-
-> [!TIP]
-> Remove versions older than 0.1.x before installing.
-
-#### Netsky fork with durable loops and capability packs
-
-```bash
+```sh
 curl -fsSL https://raw.githubusercontent.com/netsky-prod/opencode/dev/install | bash
+netsky --version
+netsky
 ```
 
-This installs the latest published unsigned CLI from `netsky-prod/opencode`; npm and package-manager commands above install upstream OpenCode. This branch adds session-scoped browser, research, mobile, security, documents, GitHub, and deploy [capability packs](./docs/capabilities.md), plus evidence checkpoints for [durable loops](./docs/loop.md). See the [fork release runbook](./docs/fork-release.md) for source builds when a feature is not yet in a published release.
+Release **0.1.0** ships unsigned CLI binaries for macOS (Apple Silicon and Intel) and glibc Linux (arm64 and AVX2-capable x64). The CLI also includes a web interface, launched with `netsky web`. There is no Netsky npm/Homebrew package or signed desktop release yet; installing `opencode-ai` installs upstream OpenCode.
 
-### Desktop App (BETA)
+See [installation, verification, and upgrades](docs/fork-release.md). On macOS, an unsigned binary can require explicit approval in Privacy & Security.
 
-OpenCode is also available as a desktop application. Download directly from the [releases page](https://github.com/anomalyco/opencode/releases) or [opencode.ai/download](https://opencode.ai/download).
+## What is different
 
-| Platform              | Download                           |
-| --------------------- | ---------------------------------- |
-| macOS (Apple Silicon) | `opencode-desktop-mac-arm64.dmg`   |
-| macOS (Intel)         | `opencode-desktop-mac-x64.dmg`     |
-| Windows               | `opencode-desktop-windows-x64.exe` |
-| Linux                 | `.deb`, `.rpm`, or `.AppImage`     |
+- **Capability packs:** load tools and guidance when a session needs them. Inactive packs stay out of the model's tool context.
+- **A human-facing manager:** `/capabilities` manages packs and MCP connections directly. Add local or remote MCPs, choose project/global storage, and attach them to a pack.
+- **Separate scope and activation:** “stored globally” does not mean “always loaded.” Pack activations belong to a conversation.
+- **Durable loops:** `/loop` schedules another turn in the same session, with fixed or agent-selected wake-up times, pause/resume, and persisted state.
+- **Evidence checkpoints:** retain acceptance criteria, verified facts, uncertainty, blockers, artifacts, and next actions across continuation.
+- **Model and tool compatibility:** retain OpenCode-compatible providers, plugins, skills, permissions, and MCP tooling.
 
-```bash
-# macOS (Homebrew)
-brew install --cask opencode-desktop
-# Windows (Scoop)
-scoop bucket add extras; scoop install extras/opencode-desktop
+Included packs cover browser automation, research, mobile development, security assessment tooling, documents/media, GitHub, and deployment. Packs may need separately installed programs or configured services. “Enabled” is not proof that a task succeeded; the manager reports dependencies and health.
+
+LangGraph Swarm, peer-swarm coordination, and Hugging Face Agent Collabs are **not in 0.1.0**. They are planned as optional future flows.
+
+## First session
+
+```sh
+cd your-project
+netsky
 ```
 
-#### Installation Directory
+Connect a model provider through `/connect` or use your existing compatible configuration. Open `/capabilities` to inspect available packs and connections. Ask for a concrete outcome and how you want it verified.
 
-The install script respects the following priority order for the installation path:
-
-1. `$OPENCODE_INSTALL_DIR` - Custom installation directory
-2. `$XDG_BIN_DIR` - XDG Base Directory Specification compliant path
-3. `$HOME/bin` - Standard user binary directory (if it exists or can be created)
-4. `$HOME/.opencode/bin` - Default fallback
-
-```bash
-# Examples
-OPENCODE_INSTALL_DIR=/usr/local/bin curl -fsSL https://opencode.ai/install | bash
-XDG_BIN_DIR=$HOME/.local/bin curl -fsSL https://opencode.ai/install | bash
+```text
+/capabilities
+/loop 10m check the test run and continue with the next verified fix
+/loop list
 ```
 
-### Agents
+The scheduler needs a running Netsky Code process. Closing every process pauses it until the harness starts again.
 
-OpenCode includes two built-in agents you can switch between with the `Tab` key.
+## Migrating from our OpenCode fork
 
-- **build** - Default, full-access agent for development work
-- **plan** - Read-only agent for analysis and code exploration
-  - Denies file edits by default
-  - Asks permission before running bash commands
-  - Ideal for exploring unfamiliar codebases or planning changes
+Launch with `netsky` instead of `opencode`. Existing OpenCode-compatible configuration and data paths remain supported in 0.1.0, including `~/.config/opencode`, project `.opencode` directories, and existing session storage. This is intentional compatibility, not a second empty profile.
 
-Also included is a **general** subagent for complex searches and multistep tasks.
-This is used internally and can be invoked using `@general` in messages.
+Existing MCPs remain configured; moving one into pack-only activation is an explicit operation in the manager. Keep credentials in their existing config/secret source, not in shareable pack manifests. Internal `@opencode-ai/*` packages and `OPENCODE_*` variables retain their names for compatibility.
 
-Learn more about [agents](https://opencode.ai/docs/agents).
+## Build from source
 
-### Documentation
+```sh
+git clone https://github.com/netsky-prod/opencode.git netsky-code
+cd netsky-code
+bun install --frozen-lockfile
+cd packages/opencode
+OPENCODE_CHANNEL=local bun run build --single --skip-install
+./dist/netsky-darwin-arm64/bin/netsky --version
+```
 
-For more info on how to configure OpenCode, [**head over to our docs**](https://opencode.ai/docs).
+Use the Bun version declared in [package.json](package.json) and the matching platform directory. The normal native build embeds the web interface.
 
-### Contributing
+## Documentation and contributing
 
-If you're interested in contributing to OpenCode, please read our [contributing docs](./CONTRIBUTING.md) before submitting a pull request.
+- [Capabilities and MCP management](docs/capabilities.md)
+- [Durable loops](docs/loop.md)
+- [Installation and release runbook](docs/fork-release.md)
+- [Contributing](CONTRIBUTING.md)
+- [Report an issue](https://github.com/netsky-prod/opencode/issues)
 
-### Building on OpenCode
+English and Russian are the maintained Netsky README versions. The other README entry points link here rather than advertising unrelated upstream releases.
 
-If you are working on a project that's related to OpenCode and is using "opencode" as part of its name, for example "opencode-dashboard" or "opencode-mobile", please add a note to your README to clarify that it is not built by the OpenCode team and is not affiliated with us in any way.
+## License and attribution
 
----
-
-**Join our community** [Discord](https://discord.gg/opencode) | [X.com](https://x.com/opencode)
+[MIT](LICENSE). Netsky Code incorporates OpenCode and preserves its original copyright and license notices. It is independently maintained by netsky-prod and is not an official OpenCode release or affiliated with the OpenCode team. External providers, plugins, and tools retain their own names and licenses.

@@ -1,129 +1,83 @@
-<p align="center">
-  <a href="https://opencode.ai">
-    <picture>
-      <source srcset="packages/console/app/src/asset/logo-ornate-dark.svg" media="(prefers-color-scheme: dark)">
-      <source srcset="packages/console/app/src/asset/logo-ornate-light.svg" media="(prefers-color-scheme: light)">
-      <img src="packages/console/app/src/asset/logo-ornate-light.svg" alt="OpenCode logo">
-    </picture>
-  </a>
-</p>
-<p align="center">Открытый AI-агент для программирования.</p>
-<p align="center">
-  <a href="https://opencode.ai/discord"><img alt="Discord" src="https://img.shields.io/discord/1391832426048651334?style=flat-square&label=discord" /></a>
-  <a href="https://www.npmjs.com/package/opencode-ai"><img alt="npm" src="https://img.shields.io/npm/v/opencode-ai?style=flat-square" /></a>
-  <a href="https://github.com/anomalyco/opencode/actions/workflows/publish.yml"><img alt="Build status" src="https://img.shields.io/github/actions/workflow/status/anomalyco/opencode/publish.yml?style=flat-square&branch=dev" /></a>
-</p>
+<p align="center"><img src="docs/assets/netsky-code.svg" width="520" alt="Netsky Code"></p>
 
-<p align="center">
-  <a href="README.md">English</a> |
-  <a href="README.zh.md">简体中文</a> |
-  <a href="README.zht.md">繁體中文</a> |
-  <a href="README.ko.md">한국어</a> |
-  <a href="README.de.md">Deutsch</a> |
-  <a href="README.es.md">Español</a> |
-  <a href="README.fr.md">Français</a> |
-  <a href="README.it.md">Italiano</a> |
-  <a href="README.da.md">Dansk</a> |
-  <a href="README.ja.md">日本語</a> |
-  <a href="README.pl.md">Polski</a> |
-  <a href="README.ru.md">Русский</a> |
-  <a href="README.bs.md">Bosanski</a> |
-  <a href="README.ar.md">العربية</a> |
-  <a href="README.no.md">Norsk</a> |
-  <a href="README.br.md">Português (Brasil)</a> |
-  <a href="README.th.md">ไทย</a> |
-  <a href="README.tr.md">Türkçe</a> |
-  <a href="README.uk.md">Українська</a> |
-  <a href="README.bn.md">বাংলা</a> |
-  <a href="README.gr.md">Ελληνικά</a> |
-  <a href="README.vi.md">Tiếng Việt</a>
-</p>
+<p align="center">Открытый агентный харнес для разработки, исследований и выполнения задач.</p>
+<p align="center"><a href="README.md">English</a> · <a href="https://github.com/netsky-prod/opencode/releases">Релизы</a> · <a href="docs/capabilities.md">Capabilities</a> · <a href="docs/loop.md">Loops</a></p>
 
-[![OpenCode Terminal UI](packages/web/src/assets/lander/screenshot.png)](https://opencode.ai)
+Netsky Code — самостоятельный проект на базе [OpenCode](https://github.com/anomalyco/opencode). Мы сохраняем терминальный интерфейс, выбор моделей, инструменты, скиллы и совместимость с MCP, развивая управление возможностями агента и продолжением работы.
 
----
+**Твоя модель, твой сервер, твои инструменты.** Можно подключить локальную модель, собственный GPU-сервер или поддерживаемого облачного провайдера. Веса моделей и подписка на инференс в харнес не входят.
 
-### Установка
+## Установка
 
-```bash
-# YOLO
-curl -fsSL https://opencode.ai/install | bash
-
-# Менеджеры пакетов
-npm i -g opencode-ai@latest        # или bun/pnpm/yarn
-scoop install opencode             # Windows
-choco install opencode             # Windows
-brew install anomalyco/tap/opencode # macOS и Linux (рекомендуем, всегда актуально)
-brew install opencode              # macOS и Linux (официальная формула brew, обновляется реже)
-sudo pacman -S opencode            # Arch Linux (Stable)
-paru -S opencode-bin               # Arch Linux (Latest from AUR)
-mise use -g opencode               # любая ОС
-nix run nixpkgs#opencode           # или github:anomalyco/opencode для самой свежей ветки dev
+```sh
+curl -fsSL https://raw.githubusercontent.com/netsky-prod/opencode/dev/install | bash
+netsky --version
+netsky
 ```
 
-> [!TIP]
-> Перед установкой удалите версии старше 0.1.x.
+В **0.1.0** выпускаются неподписанные CLI-бинарники для macOS Apple Silicon/Intel и glibc Linux arm64/x64 с AVX2. В бинарник включён веб-интерфейс: `netsky web`. Собственного npm/Homebrew-пакета и подписанного десктопного приложения пока нет. Пакет `opencode-ai` устанавливает оригинальный OpenCode.
 
-### Десктопное приложение (BETA)
+[Установка, проверка и обновление](docs/fork-release.md). На macOS неподписанный бинарник может потребовать разрешения в настройках Privacy & Security.
 
-OpenCode также доступен как десктопное приложение. Скачайте его со [страницы релизов](https://github.com/anomalyco/opencode/releases) или с [opencode.ai/download](https://opencode.ai/download).
+## Что добавлено
 
-| Платформа             | Загрузка                           |
-| --------------------- | ---------------------------------- |
-| macOS (Apple Silicon) | `opencode-desktop-mac-arm64.dmg`   |
-| macOS (Intel)         | `opencode-desktop-mac-x64.dmg`     |
-| Windows               | `opencode-desktop-windows-x64.exe` |
-| Linux                 | `.deb`, `.rpm` или AppImage        |
+- **Capability packs:** инструменты и инструкции подключаются по необходимости. Неактивные паки не загружают свои инструменты в контекст модели.
+- **Менеджер для человека:** `/capabilities` позволяет управлять паками и MCP напрямую, добавлять локальные и удалённые подключения, сохранять их для проекта или глобально и включать в состав пака.
+- **Раздельные область хранения и активация:** глобальная настройка не означает постоянную загрузку инструментов. Активации паков относятся к конкретному разговору.
+- **Durable loops:** `/loop` планирует следующий ход в той же сессии. Фиксированный или выбранный агентом интервал, пауза, возобновление и сохранение состояния.
+- **Чекпоинты с доказательствами:** критерии готовности, проверенные факты, неопределённость, блокеры, артефакты и следующий шаг сохраняются для продолжения работы.
+- **Совместимость:** провайдеры моделей, плагины, скиллы, разрешения и MCP-инструменты из экосистемы OpenCode.
 
-```bash
-# macOS (Homebrew)
-brew install --cask opencode-desktop
-# Windows (Scoop)
-scoop bucket add extras; scoop install extras/opencode-desktop
+В комплекте паки для браузера, исследований, мобильной разработки, анализа безопасности, документов и медиа, GitHub и деплоя. Некоторые требуют отдельно установленных программ или настроенных сервисов. Включённый пак — не доказательство выполнения задачи; менеджер показывает зависимости и состояние.
+
+LangGraph Swarm, одновременный peer-swarm и Hugging Face Agent Collabs **не входят в 0.1.0**. Они запланированы как опциональные режимы следующих версий.
+
+## Начало работы
+
+```sh
+cd your-project
+netsky
 ```
 
-#### Каталог установки
+Подключи провайдера через `/connect` или используй существующую совместимую конфигурацию. Открой `/capabilities`, проверь нужные паки и поставь агенту задачу с понятным критерием результата.
 
-Скрипт установки выбирает путь установки в следующем порядке приоритета:
-
-1. `$OPENCODE_INSTALL_DIR` - Пользовательский каталог установки
-2. `$XDG_BIN_DIR` - Путь, совместимый со спецификацией XDG Base Directory
-3. `$HOME/bin` - Стандартный каталог пользовательских бинарников (если существует или можно создать)
-4. `$HOME/.opencode/bin` - Fallback по умолчанию
-
-```bash
-# Примеры
-OPENCODE_INSTALL_DIR=/usr/local/bin curl -fsSL https://opencode.ai/install | bash
-XDG_BIN_DIR=$HOME/.local/bin curl -fsSL https://opencode.ai/install | bash
+```text
+/capabilities
+/loop 10m проверяй тестовый прогон и продолжай со следующего подтверждённого исправления
+/loop list
 ```
 
-### Agents
+Для работы расписания должен оставаться запущенный процесс Netsky Code. Если закрыть все процессы, планировщик продолжит работу после следующего запуска.
 
-В OpenCode есть два встроенных агента, между которыми можно переключаться клавишей `Tab`.
+## Переход с нашего форка OpenCode
 
-- **build** - По умолчанию, агент с полным доступом для разработки
-- **plan** - Агент только для чтения для анализа и изучения кода
-  - По умолчанию запрещает редактирование файлов
-  - Запрашивает разрешение перед выполнением bash-команд
-  - Идеален для изучения незнакомых кодовых баз или планирования изменений
+Запускай `netsky` вместо `opencode`. В 0.1.0 сохраняется совместимость с прежними путями конфигурации и данных: `~/.config/opencode`, папками проекта `.opencode` и существующей историей сессий. Новое название не создаёт пустой профиль.
 
-Также включен сабагент **general** для сложных поисков и многошаговых задач.
-Он используется внутренне и может быть вызван в сообщениях через `@general`.
+Существующие MCP остаются настроенными. Перевод подключения в режим только через пак — отдельное явное действие. Ключи остаются в конфигурации или источнике секретов, а не копируются в распространяемые манифесты паков. Внутренние имена пакетов `@opencode-ai/*` и переменных `OPENCODE_*` пока сохранены ради совместимости.
 
-Подробнее об [agents](https://opencode.ai/docs/agents).
+## Сборка
 
-### Документация
+```sh
+git clone https://github.com/netsky-prod/opencode.git netsky-code
+cd netsky-code
+bun install --frozen-lockfile
+cd packages/opencode
+OPENCODE_CHANNEL=local bun run build --single --skip-install
+./dist/netsky-darwin-arm64/bin/netsky --version
+```
 
-Больше информации о том, как настроить OpenCode: [**наши docs**](https://opencode.ai/docs).
+Версия Bun указана в [package.json](package.json). Выбирай каталог бинарника под свою платформу. Обычная сборка включает веб-интерфейс.
 
-### Вклад
+## Документация
 
-Если вы хотите внести вклад в OpenCode, прочитайте [contributing docs](./CONTRIBUTING.md) перед тем, как отправлять pull request.
+- [Capabilities и управление MCP](docs/capabilities.md)
+- [Durable loops](docs/loop.md)
+- [Установка и выпуск релизов](docs/fork-release.md)
+- [Участие в разработке](CONTRIBUTING.md)
+- [Сообщить о проблеме](https://github.com/netsky-prod/opencode/issues)
 
-### Разработка на базе OpenCode
+Поддерживаемые README — английский и русский. Остальные языковые страницы ведут на них, чтобы не предлагать установку чужих релизов.
 
-Если вы делаете проект, связанный с OpenCode, и используете "opencode" как часть имени (например, "opencode-dashboard" или "opencode-mobile"), добавьте примечание в README, чтобы уточнить, что проект не создан командой OpenCode и не аффилирован с нами.
+## Лицензия и происхождение
 
----
-
-**Присоединяйтесь к нашему сообществу** [Discord](https://discord.gg/opencode) | [X.com](https://x.com/opencode)
+[MIT](LICENSE). Netsky Code основан на OpenCode; исходные уведомления об авторских правах и лицензии сохранены. Это независимый проект netsky-prod, а не официальный релиз OpenCode. Провайдеры, сторонние плагины и инструменты сохраняют свои названия и лицензии.

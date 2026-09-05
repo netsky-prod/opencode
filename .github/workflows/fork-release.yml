@@ -1,10 +1,10 @@
-name: fork-release
+name: Netsky Code release
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Prerelease semver, for example 1.18.25-loop.1"
+        description: "Exact Netsky Code semver, for example 0.1.0"
         required: true
         type: string
 
@@ -17,12 +17,13 @@ concurrency:
 
 jobs:
   cli:
-    if: github.repository == 'netsky-prod/opencode'
+    if: github.repository == 'netsky-prod/opencode' || github.repository == 'netsky-prod/netsky-code'
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
       OPENCODE_VERSION: ${{ inputs.version }}
+      OPENCODE_CHANNEL: latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -34,31 +35,40 @@ jobs:
       - run: bun install --frozen-lockfile
       - name: Validate version
         run: |
-          [[ "$OPENCODE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-loop\.[0-9]+$ ]] ||
-            { echo "version must match X.Y.Z-loop.N"; exit 1; }
-      - name: Create draft
-        run: gh release create "v$OPENCODE_VERSION" --draft --prerelease --target "$GITHUB_SHA" --title "v$OPENCODE_VERSION"
-      - name: Build CLI
-        run: bun packages/opencode/script/build.ts
-      - name: Package supported archives
+          bun -e 'import semver from "semver"; const v=process.env.OPENCODE_VERSION; if (!v || semver.valid(v)!==v) throw new Error("Use an exact semantic version")'
+      - name: Test release packaging
         working-directory: packages/opencode
+        run: bun test test/installation/netsky-release.test.ts
+      - name: Create draft
+        run: gh release create "v$OPENCODE_VERSION" --draft --target "$GITHUB_SHA" --title "Netsky Code $OPENCODE_VERSION" --notes-file "docs/releases/$OPENCODE_VERSION.md"
+      - name: Build CLI
+        run: bun packages/opencode/script/build.ts --release-targets
+      - name: Package supported archives
+        run: bun script/netsky-release.ts "$OPENCODE_VERSION"
+      - name: Verify packaged checksums and Linux executable
+        working-directory: packages/opencode/dist
         run: |
-          (cd dist/opencode-darwin-arm64/bin && zip -r ../../opencode-darwin-arm64.zip opencode)
-          (cd dist/opencode-darwin-x64/bin && zip -r ../../opencode-darwin-x64.zip opencode)
-          tar -C dist/opencode-linux-arm64/bin -czf dist/opencode-linux-arm64.tar.gz opencode
-          tar -C dist/opencode-linux-x64/bin -czf dist/opencode-linux-x64.tar.gz opencode
+          sha256sum --check SHA256SUMS
+          ./netsky-linux-x64/bin/netsky --version | grep -Fx "$OPENCODE_VERSION"
       - name: Upload supported archives
         run: |
           gh release upload "v$OPENCODE_VERSION" \
-            packages/opencode/dist/opencode-darwin-arm64.zip \
-            packages/opencode/dist/opencode-darwin-x64.zip \
-            packages/opencode/dist/opencode-linux-arm64.tar.gz \
-            packages/opencode/dist/opencode-linux-x64.tar.gz
+            packages/opencode/dist/netsky-darwin-arm64.zip \
+            packages/opencode/dist/netsky-darwin-x64.zip \
+            packages/opencode/dist/netsky-linux-arm64.tar.gz \
+            packages/opencode/dist/netsky-linux-x64.tar.gz \
+            packages/opencode/dist/release.json \
+            packages/opencode/dist/SHA256SUMS
       - name: Verify required assets
         run: |
           assets=$(gh release view "v$OPENCODE_VERSION" --json assets --jq '.assets[].name')
-          for required in opencode-darwin-arm64.zip opencode-darwin-x64.zip opencode-linux-arm64.tar.gz opencode-linux-x64.tar.gz; do
+          for required in netsky-darwin-arm64.zip netsky-darwin-x64.zip netsky-linux-arm64.tar.gz netsky-linux-x64.tar.gz release.json SHA256SUMS; do
             grep -qx "$required" <<<"$assets" || { echo "missing $required"; exit 1; }
           done
       - name: Publish
-        run: gh release edit "v$OPENCODE_VERSION" --draft=false --prerelease
+        run: |
+          if [[ "$OPENCODE_VERSION" == *-* ]]; then
+            gh release edit "v$OPENCODE_VERSION" --draft=false --prerelease
+          else
+            gh release edit "v$OPENCODE_VERSION" --draft=false --prerelease=false --latest
+          fi

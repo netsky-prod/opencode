@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 150" role="img" aria-label="Netsky Code">
+  <rect width="640" height="150" rx="24" fill="#101827"/>
+  <path d="M36 112V38h18l37 46V38h18v74H91L54 66v46Z" fill="#67e8f9"/>
+  <circle cx="116" cy="32" r="5" fill="#67e8f9"/>
+  <text x="148" y="94" fill="#f1f5f9" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="48" font-weight="600" letter-spacing="-2">netsky code</text>
+</svg>

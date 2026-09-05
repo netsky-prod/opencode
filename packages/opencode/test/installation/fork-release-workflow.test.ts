@@ -11,10 +11,12 @@ describe("fork release workflow", () => {
     expect(workflow).toContain("OPENCODE_VERSION:")
     expect(workflow).toContain("gh release upload")
     for (const asset of [
-      "opencode-darwin-arm64.zip",
-      "opencode-darwin-x64.zip",
-      "opencode-linux-arm64.tar.gz",
-      "opencode-linux-x64.tar.gz",
+      "netsky-darwin-arm64.zip",
+      "netsky-darwin-x64.zip",
+      "netsky-linux-arm64.tar.gz",
+      "netsky-linux-x64.tar.gz",
+      "release.json",
+      "SHA256SUMS",
     ]) {
       expect(workflow).toContain(asset)
     }

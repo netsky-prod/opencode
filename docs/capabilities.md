@@ -1,6 +1,21 @@
-# Capability packs
+# Netsky Code capability packs
 
-Capability packs add tools and guidance when a session needs them. They do not replace the model, permissions, or durable [loop](./loop.md). A fresh session exposes four management tools: `capability_search`, `capability_status`, `capability_enable`, and `capability_disable`. Other ordinary OpenCode tools remain available; inactive packs do not contribute MCP schemas or skill contents.
+## Manage capabilities without a model turn
+
+Open `/capabilities` in the terminal UI. `/mcps` remains an entry point for MCP connections. The manager operates directly through the server: a human toggle does not send a prompt to the model or add a fabricated conversation message.
+
+- Inspect installed packs, profiles, active state, and dependency/remediation details.
+- Enable or disable a profile for the current session. Start or open a conversation before changing its activation; inventory and MCP configuration do not require a conversation.
+- Add or edit local stdio MCPs (command plus environment) or remote MCPs (URL plus headers/authentication).
+- Save a connection globally or for the current project, check its connection, and attach it to a pack.
+
+**Storage scope is not activation.** A globally saved connection is available across projects. An always-on connection exposes its tools without a pack; a pack-only connection exposes them when its pack is enabled for the session. Moving an existing always-on MCP to pack-only mode requires an explicit confirmation. Existing connections are not migrated automatically.
+
+The editor preserves omitted secret values rather than round-tripping masked placeholders. Listings show credential field names, not credential values. Conflicting edits are rejected: refresh before saving again. Changes that affect later model turns do not cancel a tool call already running.
+
+## Agent-managed activation
+
+Capability packs add tools and guidance when a session needs them. They do not replace the model, permissions, or durable [loop](./loop.md). A fresh session exposes four management tools: `capability_search`, `capability_status`, `capability_enable`, and `capability_disable`. Other ordinary Netsky Code tools remain available; inactive packs do not contribute MCP schemas or skill contents.
 
 Ask the agent to discover a capability, inspect its status, enable the smallest applicable profile, and verify a concrete outcome. Enabled tools become available on the next provider turn. Enabling a pack is not evidence that the task succeeded.
 
@@ -35,6 +50,24 @@ Use `capability_status` for profile-scoped diagnostics:
 Overall pack state can also be `installed` or `active`. Check the individual `profileStatus` rather than equating installation with readiness. Status returns remediation and variable names, never resolved credentials.
 
 ## Author a pack
+
+The manager can create a user pack that references an already configured MCP, without embedding its endpoint credentials:
+
+```json
+{
+  "id": "team-tools",
+  "version": 1,
+  "description": "The team's research tools.",
+  "platforms": ["darwin", "linux"],
+  "skills": [],
+  "runtimes": [{ "id": "research", "type": "mcp", "mcp": "gemini-research" }],
+  "profiles": {
+    "default": { "description": "Research tools.", "skills": [], "runtimes": ["research"] }
+  }
+}
+```
+
+`mcp` references the configured server name. Credentials and authentication stay with that connection. Keep the referenced connection configured on each machine where you install the pack; a shared manifest is not a credential export. Direct runtime definitions below remain supported for distributable packs with environment-based configuration.
 
 Create `capability.json` plus any referenced Markdown files in one of:
 

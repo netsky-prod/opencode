@@ -1,6 +1,6 @@
 # Durable loops
 
-`/loop` schedules another turn in the current session. OpenCode must remain running; closing every OpenCode process pauses the scheduler until OpenCode starts again.
+`/loop` schedules another turn in the current session. Netsky Code must remain running; closing every Netsky Code process pauses the scheduler until `netsky` starts again.
 
 ## Examples
 
@@ -18,4 +18,4 @@ Fixed loops coalesce missed intervals and keep at most one queued invocation. Ad
 
 Deleting a loop prevents future admission, but a prompt already admitted to the durable inbox may execute once.
 
-The model can manage loops directly with `loop_create`, `loop_list`, `loop_update`, `loop_delete`, and `loop_wakeup`. Every mutation uses the normal OpenCode permission system and is scoped to the current session.
+The model can manage loops directly with `loop_create`, `loop_list`, `loop_update`, `loop_delete`, and `loop_wakeup`. Every mutation uses the normal permission system and is scoped to the current session.

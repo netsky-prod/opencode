@@ -1,70 +1,80 @@
-# Fork installation and releases
+# Netsky Code installation and releases
 
-This fork ships unsigned OpenCode CLI binaries for macOS arm64/x64 and glibc Linux arm64/x64. It does not publish npm, Homebrew, Scoop, Chocolatey, desktop, Windows, musl, or non-AVX2 x64 builds. Those package-manager installations remain upstream OpenCode.
+Netsky Code ships unsigned CLI binaries for macOS arm64/x64 and glibc Linux arm64/x64 (AVX2 required on Linux x64). The web UI is embedded. There are no Netsky npm, Homebrew, Scoop, Chocolatey, signed desktop, Windows, musl, or mobile releases in 0.1.0.
 
 ## Install or upgrade
 
-```bash
+```sh
 curl -fsSL https://raw.githubusercontent.com/netsky-prod/opencode/dev/install | bash
-opencode --version
+netsky --version
+netsky
 ```
 
-The installer writes `~/.opencode/bin/opencode`. A curl-installed fork checks only `netsky-prod/opencode` for updates and replaces that same binary.
+The default executable is `~/.netsky/bin/netsky`. Open a new terminal if its PATH has not been refreshed. `netsky upgrade` checks the Netsky repository, not upstream OpenCode. Existing OpenCode-compatible configuration, credentials, project `.opencode` resources, and session storage remain in their original locations. The installer does not delete your previous `opencode` binary.
 
-The binaries are unsigned. On macOS, approve the binary explicitly in System Settings → Privacy & Security when Gatekeeper blocks it. Alternatively, after verifying that the downloaded file came from this repository's release, remove quarantine from that exact binary:
+The binaries are unsigned. On macOS, approve the exact binary in System Settings → Privacy & Security if Gatekeeper blocks it. Do not disable Gatekeeper system-wide.
 
-```bash
-xattr -d com.apple.quarantine ~/.opencode/bin/opencode
+## Verify a release manually
+
+Download the platform archive plus `SHA256SUMS` from the same [release](https://github.com/netsky-prod/opencode/releases). In the directory containing those downloads, verify the matching file:
+
+```sh
+# Example: Apple Silicon
+shasum -a 256 netsky-darwin-arm64.zip
+# Compare the result with the netsky-darwin-arm64.zip line in SHA256SUMS.
+unzip netsky-darwin-arm64.zip
+./netsky --version
 ```
 
-## Build the current branch
+`release.json` records the version, supported platform, archive size and hash. Checksums detect corruption or mismatched downloads; they are not a code signature or an independent publisher identity check.
 
-The installer downloads published release assets, not the latest `dev` source. To test unpublished capability changes, clone this fork, install the Bun version from `package.json`, then run:
+## Build the branch
 
-```bash
+The installer downloads published release assets, not unpublished source. Use Bun 1.3.14, as pinned in package.json:
+
+```sh
 bun install --frozen-lockfile
 cd packages/opencode
 OPENCODE_CHANNEL=local bun run build --single --skip-install
-./dist/opencode-darwin-arm64/bin/opencode --version
+./dist/netsky-darwin-arm64/bin/netsky --version
 ```
 
-Choose the matching `dist/opencode-<os>-<arch>` directory on other hosts. The normal build embeds the Web UI; `--skip-embed-web-ui` is suitable only for a CLI-only development build. Preserve your previous installed binary before copying a tested build over it. Configuration and databases are not part of the archive and must not be overwritten during installation.
+Choose `dist/netsky-<os>-<arch>` for your host. The normal build embeds the web UI. `--skip-embed-web-ui` is for CLI-only development probes, not the published release. Preserve a previous binary before replacing an existing installation.
 
-The `local` channel avoids requesting an unpublished fork-version plugin package from npm. Use an explicit version/channel only for a release whose plugin dependency strategy has been verified.
+Compatibility names such as `OPENCODE_CHANNEL`, internal `@opencode-ai/*` packages and persistence paths are retained deliberately. Built-in capability manifests and guidance are embedded; browsers, Node/npm/npx, Xcode, Flutter, scanners, GitHub CLI, Docker and remote services are separate prerequisites.
 
-Built-in capability JSON/Markdown is embedded by Bun's static imports. Do not add installation steps that copy these assets from a developer checkout. External pack dependencies (browsers, Node/npm/npx, Xcode, Flutter, scanners, GitHub CLI, Docker) are not embedded. See [capability setup and migration](./capabilities.md).
+## Release verification
 
-Before a capability release, run `bun test test/capability/distribution.test.ts test/capability/e2e.test.ts` and a real-model acceptance run, in addition to the normal package tests and typechecks. The SDK generator's required-body patch is a committed Bun dependency patch and must survive `bun install --frozen-lockfile`.
+From `packages/opencode`:
 
-## Sync upstream
+```sh
+bun test test/installation
+bun test test/capability/distribution.test.ts test/capability/e2e.test.ts
+bun typecheck
+```
 
-Add the upstream remote once:
+Also run affected Core/TUI/App tests and typechecks, a native keyboard-driven manager check, and a real-model task that invokes an enabled MCP tool. Check fresh-session isolation and restart persistence. The [capability documentation](capabilities.md) describes scope, permissions, and migration.
 
-```bash
+## Publish
+
+Run against the Netsky repository explicitly: `gh` can otherwise infer the upstream repository for a fork.
+
+```sh
+gh workflow run fork-release.yml --repo netsky-prod/opencode --ref dev -f version=0.1.0
+gh run list --repo netsky-prod/opencode --workflow fork-release.yml
+gh run watch RUN_ID --repo netsky-prod/opencode
+gh release view v0.1.0 --repo netsky-prod/opencode
+```
+
+The manual workflow creates a draft, builds only the four supported targets, packages them through `script/netsky-release.ts`, verifies checksums and the Linux executable, uploads all required files, checks the uploaded asset list, then publishes. Stable versions become stable releases; versions with a prerelease suffix remain prereleases. Do not reuse a published version.
+
+## Sync the foundation
+
+```sh
 git remote add upstream https://github.com/anomalyco/opencode.git
-```
-
-Then merge upstream into the fork branch and resolve any conflicts before testing:
-
-```bash
 git fetch upstream
 git switch dev
 git merge upstream/dev
-git push origin dev
 ```
 
-`git merge --ff-only upstream/dev` may be used only while the fork's `dev` has no fork-only commits.
-
-## Publish a prerelease
-
-Run the manual workflow with an explicit `X.Y.Z-loop.N` version:
-
-```bash
-gh workflow run fork-release.yml -f version=1.18.25-loop.1
-gh run watch
-gh release view v1.18.25-loop.1
-```
-
-The workflow first creates a draft prerelease, builds with the existing Bun build script, uploads the four required archives, verifies their names, and only then publishes the release. It deliberately does not use upstream's private runners, signing credentials, npm publishing, or desktop release jobs.
-
-Before publishing, run the focused installation tests and a native build from `packages/opencode` as described in the implementation plan. For loop behavior and syntax, see [Durable loops](./loop.md).
+Only add the remote if it is not already configured. Resolve conflicts, preserve Netsky identity and compatibility, and verify before pushing to your fork. This repository does not use upstream private signing or publishing infrastructure.
