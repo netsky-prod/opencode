@@ -97,7 +97,7 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         const manager = yield* ready
         const catalog = yield* CapabilityCatalog.Service
-        const health = yield* manager.status(sessionID)
+        const health = yield* manager.status(sessionID, { probe: false })
         const installed = yield* catalog.list()
         const entries = yield* Effect.forEach(installed, (pack) =>
           Effect.gen(function* () {

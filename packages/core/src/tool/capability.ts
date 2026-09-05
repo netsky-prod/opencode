@@ -115,7 +115,7 @@ type EnableInput = {
   readonly profiles?: ReadonlyArray<CapabilityManifest.ID>
 }
 type DisableInput = { readonly id: CapabilityManifest.ID }
-type StatusInput = { readonly id?: CapabilityManifest.ID }
+type StatusInput = { readonly id?: CapabilityManifest.ID; readonly probe?: boolean }
 type ManagementContext = { readonly sessionID: SessionSchema.ID; readonly agent?: AgentV2.ID }
 type StatusContext = { readonly sessionID?: SessionSchema.ID }
 export interface Interface {
@@ -126,6 +126,7 @@ export interface Interface {
   ) => Effect.Effect<{ id: CapabilityManifest.ID; state: "disabled"; nextTurn: boolean }>
   readonly status: (
     sessionID?: SessionSchema.ID,
+    options?: { readonly probe?: boolean },
   ) => Effect.Effect<{ capabilities: ReadonlyArray<typeof CapabilityStatus.Type> }>
 }
 export class Service extends Context.Service<Service, Interface>()("@opencode/CapabilityManagement") {}
@@ -628,7 +629,7 @@ const layer = Layer.effect(
         const statuses = yield* Effect.forEach(installed, (pack) =>
           Effect.gen(function* () {
             const activation = active.get(pack.id)
-            const dependencies = yield* probe(pack)
+            const dependencies = input.probe === false ? [] : yield* probe(pack)
             const profiles = activation ? validProfiles(pack, activation.profiles) : undefined
             const fingerprint = manifestFingerprint(pack)
             const selectedRuntimeDefinitions = selectedRuntimes(pack, profiles ?? [])
@@ -807,7 +808,7 @@ const layer = Layer.effect(
         }),
       enable: (input) => enable(input, input),
       disable: (input) => disable(input, input),
-      status: (sessionID) => status({}, { sessionID }),
+      status: (sessionID, options) => status({ probe: options?.probe }, { sessionID }),
     })
   }),
 )

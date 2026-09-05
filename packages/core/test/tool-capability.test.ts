@@ -449,6 +449,26 @@ describe("CapabilityTool", () => {
     }),
   )
 
+  it.effect("read-only manager inventory skips dependency probes and retains runtime remediation", () =>
+    Effect.gen(function* () {
+      reset()
+      const manager = yield* CapabilityTool.Service
+      expect((yield* manager.status(undefined, { probe: false })).capabilities[0].state).toBe("installed")
+      expect(probeCommands).toEqual([])
+      yield* manager.enable({ sessionID, id: CapabilityManifest.ID.make("browser") })
+      probeCommands.length = 0
+      runtimeState = "failed"
+      const inventory = yield* manager.status(sessionID, { probe: false })
+      expect(inventory.capabilities[0]).toMatchObject({
+        state: "failed",
+        remediation: expect.arrayContaining([expect.stringContaining("browser")]),
+      })
+      expect(probeCommands).toEqual([])
+      yield* manager.status(sessionID)
+      expect(probeCommands).not.toEqual([])
+    }),
+  )
+
   test("declares the host capability runtime adapter as an unbound requirement", () => {
     expect(LayerNode.hasUnbound(CapabilityTool.node, CapabilityRuntime.node)).toBe(true)
   })
