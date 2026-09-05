@@ -285,10 +285,12 @@ describe("built-in capability end-to-end behavior", () => {
       const enabled = yield* registry.materialize(browserSession)
       yield* settle(enabled, browserSession, "capability_disable", { id: "browser" })
       yield* settle(enabled, browserSession, "capability_disable", { id: "research" })
+      // Deactivation preserves the current advertised snapshot; the next provider
+      // materialization releases its holds before the idle shutdown timer starts.
+      const disabled = yield* registry.materialize(browserSession)
       yield* TestClock.adjust("31 seconds")
       yield* waitForFile(closeMarker)
       expect(yield* Effect.promise(() => Bun.file(closeMarker).exists())).toBe(true)
-      const disabled = yield* registry.materialize(browserSession)
       expect(names(disabled)).not.toContain("browser_playwright_browser_navigate")
       expect(names(disabled)).not.toContain("research_federated-research_search")
     }).pipe(withTmpdirInstance()),
