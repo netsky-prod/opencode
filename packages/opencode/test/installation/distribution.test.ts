@@ -70,7 +70,7 @@ describe("Netsky Code distribution", () => {
     expect(method).toBeFunction()
     if (!method) return
     expect(method("/Users/test/.netsky/bin/netsky")).toBe("curl")
-    expect(method("/Users/test/.local/bin/netsky")).toBe("curl")
+    expect(method("/Users/test/.local/bin/netsky")).toBe("unknown")
     expect(method("/Users/test/.opencode/bin/opencode")).toBe("unknown")
     expect(method("/opt/homebrew/bin/netsky")).toBe("unknown")
   })

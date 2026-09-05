@@ -67,8 +67,24 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-INSTALL_DIR=$HOME/.netsky/bin
+INSTALL_ROOT=$HOME/.netsky
+INSTALL_DIR=$INSTALL_ROOT/bin
 mkdir -p "$INSTALL_DIR"
+
+work_dir=""
+cleanup() {
+    if [ -n "$work_dir" ] && [ -d "$work_dir" ]; then
+        rm -rf -- "$work_dir"
+    fi
+}
+trap cleanup EXIT
+
+cleanup_progress() {
+    trap - RETURN
+    rm -f -- "$work_dir/download.trace"
+    printf '\033[?25h' >&4
+    exec 4>&-
+}
 
 # If --binary is provided, skip all download/detection logic
 if [ -n "$binary_path" ]; then
@@ -172,7 +188,7 @@ else
     fi
 
     if [ -z "$requested_version" ]; then
-        specific_version=$(curl -s "https://api.github.com/repos/$REPOSITORY/releases?per_page=1" | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p' | head -n 1)
+        specific_version=$(curl -fsSL "https://api.github.com/repos/$REPOSITORY/releases/latest" | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p' | head -n 1)
 
         if [[ $? -ne 0 || -z "$specific_version" ]]; then
             echo -e "${RED}Failed to fetch version information${NC}"
@@ -270,17 +286,14 @@ download_with_progress() {
         exec 4>/dev/null
     fi
 
-    local tmp_dir=${TMPDIR:-/tmp}
-    local basename="${tmp_dir}/netsky_install_$$"
-    local tracefile="${basename}.trace"
+    local tracefile="$work_dir/download.trace"
 
-    rm -f "$tracefile"
     mkfifo "$tracefile"
 
     # Hide cursor
     printf "\033[?25l" >&4
 
-    trap "trap - RETURN; rm -f \"$tracefile\"; printf '\033[?25h' >&4; exec 4>&-" RETURN
+    trap cleanup_progress RETURN
 
     (
         curl --trace-ascii "$tracefile" -s -L -o "$output" "$url"
@@ -322,55 +335,56 @@ download_with_progress() {
 
 download_and_install() {
     print_message info "\n${MUTED}Installing ${NC}Netsky Code ${MUTED}version: ${NC}$specific_version"
-    local tmp_dir="${TMPDIR:-/tmp}/netsky_install_$$"
-    mkdir -p "$tmp_dir"
+    work_dir=$(mktemp -d "${TMPDIR:-/tmp}/netsky-install.XXXXXX")
+    chmod 700 "$work_dir"
 
-    if [[ "$os" == "windows" ]] || ! [ -t 2 ] || ! download_with_progress "$url" "$tmp_dir/$filename"; then
+    if [[ "$os" == "windows" ]] || ! [ -t 2 ] || ! download_with_progress "$url" "$work_dir/$filename"; then
         # Fallback to standard curl on Windows, non-TTY environments, or if custom progress fails
-        curl -# -L -o "$tmp_dir/$filename" "$url"
+        curl -# -L -o "$work_dir/$filename" "$url"
     fi
 
     local checksums_url="https://github.com/$REPOSITORY/releases/download/v${specific_version}/SHA256SUMS"
-    if ! curl -fsSL -o "$tmp_dir/SHA256SUMS" "$checksums_url"; then
+    if ! curl -fsSL -o "$work_dir/SHA256SUMS" "$checksums_url"; then
         print_message error "Checksum verification failed: SHA256SUMS is unavailable."
-        rm -rf "$tmp_dir"
         exit 1
     fi
 
     local expected_checksum
-    expected_checksum=$(awk -v filename="$filename" '$2 == filename || $2 == "*" filename { print $1; exit }' "$tmp_dir/SHA256SUMS")
+    expected_checksum=$(awk -v filename="$filename" '$2 == filename || $2 == "*" filename { print $1; exit }' "$work_dir/SHA256SUMS")
     if [ -z "$expected_checksum" ]; then
         print_message error "Checksum verification failed: $filename is missing from SHA256SUMS."
-        rm -rf "$tmp_dir"
         exit 1
     fi
 
     local actual_checksum
     if command -v sha256sum >/dev/null 2>&1; then
-        actual_checksum=$(sha256sum "$tmp_dir/$filename" | awk '{print $1}')
+        actual_checksum=$(sha256sum "$work_dir/$filename" | awk '{print $1}')
     elif command -v shasum >/dev/null 2>&1; then
-        actual_checksum=$(shasum -a 256 "$tmp_dir/$filename" | awk '{print $1}')
+        actual_checksum=$(shasum -a 256 "$work_dir/$filename" | awk '{print $1}')
     else
         print_message error "Checksum verification failed: sha256sum or shasum is required."
-        rm -rf "$tmp_dir"
         exit 1
     fi
 
     if [ "$(printf '%s' "$actual_checksum" | tr '[:upper:]' '[:lower:]')" != "$(printf '%s' "$expected_checksum" | tr '[:upper:]' '[:lower:]')" ]; then
         print_message error "Checksum verification failed for $filename."
-        rm -rf "$tmp_dir"
         exit 1
     fi
 
     if [ "$os" = "linux" ]; then
-        tar -xzf "$tmp_dir/$filename" -C "$tmp_dir"
+        tar -xzf "$work_dir/$filename" -C "$work_dir"
     else
-        unzip -q "$tmp_dir/$filename" -d "$tmp_dir"
+        unzip -q "$work_dir/$filename" -d "$work_dir"
     fi
 
-    mv "$tmp_dir/$APP" "$INSTALL_DIR/$APP"
+    if [ ! -f "$work_dir/$APP" ] || [ ! -f "$work_dir/LICENSE" ]; then
+        print_message error "Installation failed: the release archive must contain $APP and LICENSE."
+        exit 1
+    fi
+
+    mv "$work_dir/LICENSE" "$INSTALL_ROOT/LICENSE"
+    mv "$work_dir/$APP" "$INSTALL_DIR/$APP"
     chmod 755 "${INSTALL_DIR}/$APP"
-    rm -rf "$tmp_dir"
 }
 
 install_from_binary() {

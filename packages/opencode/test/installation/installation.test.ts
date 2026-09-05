@@ -72,7 +72,7 @@ describe("installation", () => {
       (request) => {
         forkCalls.push(request.url)
         if (request.url.endsWith("/install")) return new Response("install script", { status: 200 })
-        return jsonResponse([{ tag_name: "v1.18.25-loop.1" }])
+        return jsonResponse({ tag_name: "v1.18.25-loop.1" })
       },
       (cmd, args) => {
         if (cmd === "bash" && args[0] === "--version") return "GNU bash"
@@ -84,15 +84,15 @@ describe("installation", () => {
       forkCalls.length = 0
       expect(yield* Installation.use.latest("curl")).toBe("1.18.25-loop.1")
       yield* Installation.use.upgrade("curl", "1.18.25-loop.1")
-      expect(forkCalls).toContain("https://api.github.com/repos/netsky-prod/opencode/releases?per_page=1")
+      expect(forkCalls).toContain("https://api.github.com/repos/netsky-prod/opencode/releases/latest")
       expect(forkCalls).toContain("https://raw.githubusercontent.com/netsky-prod/opencode/dev/install")
       expect(forkCalls.some((url) => url.includes("anomalyco/opencode"))).toBe(false)
     }),
   )
 
   describe("latest", () => {
-    testEffect(testLayer(() => jsonResponse([{ tag_name: "v1.2.3" }]))).effect(
-      "reads release version from GitHub releases",
+    testEffect(testLayer(() => jsonResponse({ tag_name: "v1.2.3" }))).effect(
+      "reads the stable release version from GitHub's latest endpoint",
       () =>
         Effect.gen(function* () {
           const result = yield* Installation.use.latest("unknown")
@@ -100,7 +100,7 @@ describe("installation", () => {
         }),
     )
 
-    testEffect(testLayer(() => jsonResponse([{ tag_name: "v4.0.0-beta.1" }]))).effect(
+    testEffect(testLayer(() => jsonResponse({ tag_name: "v4.0.0-beta.1" }))).effect(
       "strips v prefix from GitHub release tag",
       () =>
         Effect.gen(function* () {
@@ -113,13 +113,13 @@ describe("installation", () => {
     testEffect(
       testLayer((request) => {
         npmCalls.push(request.url)
-        return jsonResponse([{ tag_name: "v0.1.0" }])
+        return jsonResponse({ tag_name: "v0.1.0" })
       }),
     ).effect("uses the fork release feed even when a legacy npm method is requested", () =>
       Effect.gen(function* () {
         const result = yield* Installation.use.latest("npm")
         expect(result).toBe("0.1.0")
-        expect(npmCalls).toEqual(["https://api.github.com/repos/netsky-prod/opencode/releases?per_page=1"])
+        expect(npmCalls).toEqual(["https://api.github.com/repos/netsky-prod/opencode/releases/latest"])
       }),
     )
   })

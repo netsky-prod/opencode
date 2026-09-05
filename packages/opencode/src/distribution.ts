@@ -11,6 +11,5 @@ export function compatibilityPluginVersion(input: { local: boolean }) {
 
 export function installationMethod(executable: string) {
   if (executable.endsWith(path.join(".netsky", "bin", commandName))) return "curl" as const
-  if (executable.endsWith(path.join(".local", "bin", commandName))) return "curl" as const
   return "unknown" as const
 }

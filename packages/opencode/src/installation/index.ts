@@ -62,7 +62,6 @@ export class UpgradeFailedError extends Schema.TaggedErrorClass<UpgradeFailedErr
 
 // Response schemas for external version APIs
 const GitHubRelease = Schema.Struct({ tag_name: Schema.String })
-const GitHubReleases = Schema.Array(GitHubRelease)
 
 export interface Interface {
   readonly info: () => Effect.Effect<Info>
@@ -141,9 +140,7 @@ const layer: Layer.Layer<Service, never, HttpClient.HttpClient | AppProcess.Serv
         const response = yield* httpOk.execute(
           HttpClientRequest.get(FORK_RELEASE_API).pipe(HttpClientRequest.acceptJson),
         )
-        const data = yield* HttpClientResponse.schemaBodyJson(GitHubReleases)(response)
-        const release = data[0]
-        if (!release) return yield* Effect.die("Fork has no GitHub releases")
+        const release = yield* HttpClientResponse.schemaBodyJson(GitHubRelease)(response)
         return release.tag_name.replace(/^v/, "")
       }, Effect.orDie),
       upgrade: Effect.fn("Installation.upgrade")(function* (m: Method, target: string) {
