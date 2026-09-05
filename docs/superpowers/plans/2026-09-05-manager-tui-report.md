@@ -12,7 +12,7 @@
 - MCP attachment writes references, not resolved credentials. Existing pack attachment uses that pack's source scope and revision. New packs ask separately for target storage scope and use an empty revision. Requests also include the selected MCP source scope and revision so a shadowed or concurrently edited definition cannot be used silently.
 - Same-name global/project definitions are visibly labeled. Connection checks always include the selected entry scope; global entries reported as shadowed remain explicit.
 - Added a concealed `DialogPrompt` mode that keeps actual secret values outside the rendered terminal while preserving the confirmed input value.
-- Kept the searchable manager unmounted until inventory resolves, preventing early keyboard input from being absorbed by a locked filter. The loading-to-ready transition is covered by a deferred-list render test.
+- Kept one stable searchable manager mounted while inventory resolves, preventing an OpenTUI dynamic-root transition from blanking the real modal. The title changes from loading to ready, and locked filters are blurred/suspended so early keyboard input is not absorbed. The loading-to-ready transition is covered through an actual `dialog.replace` modal render.
 - Added configurable `capability_list` and Space activation bindings. Public terminal/update text in `app.tsx` now says Netsky Code / `netsky`; internal compatibility identifiers remain unchanged.
 
 ## Backend contract consumed
@@ -24,7 +24,7 @@ The TUI uses the generated `sdk.client.capability` methods: `list`, `enable`, `d
 Run from `packages/tui` with Bun 1.3.14:
 
 - `bun typecheck` — passed.
-- `bun run test` — 216 passed, 1 pre-existing skipped, 0 failed, 8 snapshots, 525 expectations. Existing noisy `/tmp/opencode/state/kv.json` warnings from unrelated diff-viewer fixtures remained non-failing.
+- `bun run test` — 216 passed, 1 pre-existing skipped, 0 failed, 8 snapshots, 526 expectations. Existing noisy `/tmp/opencode/state/kv.json` warnings from unrelated diff-viewer fixtures remained non-failing.
 - Focused capability, prompt, and config tests — 34 passed, 0 failed, 93 expectations.
 
 Run from `packages/opencode`:
@@ -44,7 +44,7 @@ The release PTY pass should exercise the compiled `netsky` executable in an isol
 5. On an MCP row, exercise Edit, Check, Authenticate (remote only), and Attach. Verify always-on edits warn, attachment to an existing pack uses its scope, and new-pack attachment asks for global/project storage.
 6. With same-name global and project MCP entries, verify the global row says it is shadowed and scoped check/attach never mutates the project entry accidentally.
 
-Compiled-native/Qwen acceptance was run by the release root because it owns the executable build, installation backup, controlled real MCP fixtures, and real provider session. The pass completed successfully in `tmp/netsky-native-qYxnjD/result.json`: native launch, MCP creation and check, pack creation, activation, session isolation, zero fabricated activation messages, a real Qwen tool call returning fixture data, and deactivation all passed.
+Compiled-native/Qwen acceptance was run by the release root because it owns the executable build, installation backup, controlled real MCP fixtures, and real provider session. The earlier full pass completed successfully in `tmp/netsky-native-qYxnjD/result.json`: native launch, MCP creation and check, pack creation, activation, session isolation, zero fabricated activation messages, a real Qwen tool call returning fixture data, and deactivation all passed. After fixing the loading transition, an isolated native smoke pass in `tmp/netsky-manager-smoke-fJnLFG/manager.txt` confirmed `/capabilities` reaches the interactive inventory through the compiled binary.
 
 ## Compatibility note
 

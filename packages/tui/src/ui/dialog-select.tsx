@@ -114,6 +114,19 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
   )
 
   let input: InputRenderable
+  function focusInput() {
+    setTimeout(() => {
+      if (!input || input.isDestroyed || props.locked) return
+      input.focus()
+    }, 1)
+  }
+  createEffect(() => {
+    const locked = props.locked
+    if (!input || input.isDestroyed) return
+    input.traits = { status: "FILTER", ...(locked ? { suspend: true } : {}) }
+    if (locked) input.blur()
+    else focusInput()
+  })
 
   const actions = createMemo(() => props.actions ?? [])
   const shownActions = createMemo(() => actions().filter((item) => !item.hidden))
@@ -583,12 +596,8 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
               focusedTextColor={theme.textMuted}
               ref={(r) => {
                 input = r
-                input.traits = { status: "FILTER" }
-                setTimeout(() => {
-                  if (!input) return
-                  if (input.isDestroyed) return
-                  input.focus()
-                }, 1)
+                input.traits = { status: "FILTER", ...(props.locked ? { suspend: true } : {}) }
+                focusInput()
               }}
               placeholder={props.placeholder ?? "Search"}
               placeholderColor={theme.textMuted}

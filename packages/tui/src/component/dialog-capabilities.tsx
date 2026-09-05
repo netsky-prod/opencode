@@ -1,4 +1,4 @@
-import { createMemo, createSignal, onMount, Show } from "solid-js"
+import { createMemo, createSignal, onMount } from "solid-js"
 import { DialogSelect, type DialogSelectOption } from "../ui/dialog-select"
 import {
   capabilityPackDetails,
@@ -138,55 +138,47 @@ export function DialogCapabilitiesView(props: {
   })
 
   return (
-    <Show
-      when={!loading()}
-      fallback={
-        <box paddingLeft={4} paddingRight={4} paddingBottom={2}>
-          <text>Loading capability inventory…</text>
-        </box>
-      }
-    >
-      <DialogSelect
-        title="Capabilities & MCPs"
-        options={options()}
-        emptyView={<text>No capability packs or MCPs</text>}
-        onSelect={(option) => {
-          const value = option.value
-          if (value.kind === "retry") void refresh()
-          if (value.kind === "pack") {
-            dialog.replace(() => (
-              <DialogCapabilityPack
-                client={props.client}
-                auth={props.auth}
-                sessionID={props.sessionID}
-                pack={value.pack}
-              />
-            ))
-          }
-          if (value.kind === "mcp") {
-            dialog.replace(() => (
-              <DialogMcpManager
-                client={props.client}
-                auth={props.auth}
-                inventory={inventory()!}
-                mcp={value.mcp}
-                sessionID={props.sessionID}
-              />
-            ))
-          }
-          if (value.kind === "add-mcp") {
-            dialog.replace(() => (
-              <DialogMcpManager
-                client={props.client}
-                auth={props.auth}
-                inventory={inventory()!}
-                sessionID={props.sessionID}
-              />
-            ))
-          }
-        }}
-      />
-    </Show>
+    <DialogSelect
+      title={loading() ? "Loading capability inventory…" : "Capabilities & MCPs"}
+      options={options()}
+      locked={loading()}
+      emptyView={loading() ? <text>Please wait…</text> : <text>No capability packs or MCPs</text>}
+      onSelect={(option) => {
+        const value = option.value
+        if (value.kind === "retry") void refresh()
+        if (value.kind === "pack") {
+          dialog.replace(() => (
+            <DialogCapabilityPack
+              client={props.client}
+              auth={props.auth}
+              sessionID={props.sessionID}
+              pack={value.pack}
+            />
+          ))
+        }
+        if (value.kind === "mcp") {
+          dialog.replace(() => (
+            <DialogMcpManager
+              client={props.client}
+              auth={props.auth}
+              inventory={inventory()!}
+              mcp={value.mcp}
+              sessionID={props.sessionID}
+            />
+          ))
+        }
+        if (value.kind === "add-mcp") {
+          dialog.replace(() => (
+            <DialogMcpManager
+              client={props.client}
+              auth={props.auth}
+              inventory={inventory()!}
+              sessionID={props.sessionID}
+            />
+          ))
+        }
+      }}
+    />
   )
 }
 
