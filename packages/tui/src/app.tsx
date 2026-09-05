@@ -41,7 +41,7 @@ import { LocalProvider, useLocal } from "./context/local"
 import { PermissionProvider } from "./context/permission"
 import { DialogModel } from "./component/dialog-model"
 import { useConnected } from "./component/use-connected"
-import { DialogMcp } from "./component/dialog-mcp"
+import { DialogCapabilities, capabilityManagerCommands } from "./component/dialog-capabilities"
 import { DialogStatus } from "./component/dialog-status"
 import { DialogDebug } from "./component/dialog-debug"
 import { DialogThemeList } from "./component/dialog-theme-list"
@@ -111,6 +111,7 @@ const appBindingCommands = [
   "model.cycle_favorite",
   "model.cycle_favorite_reverse",
   "agent.list",
+  "capability.list",
   "mcp.list",
   "agent.cycle",
   "agent.cycle.reverse",
@@ -454,24 +455,24 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
     if (!terminalTitleEnabled() || Flag.OPENCODE_DISABLE_TERMINAL_TITLE) return
 
     if (route.data.type === "home") {
-      renderer.setTerminalTitle("OpenCode")
+      renderer.setTerminalTitle("Netsky Code")
       return
     }
 
     if (route.data.type === "session") {
       const session = sync.session.get(route.data.sessionID)
       if (!session || isDefaultTitle(session.title)) {
-        renderer.setTerminalTitle("OpenCode")
+        renderer.setTerminalTitle("Netsky Code")
         return
       }
 
       const title = session.title.length > 40 ? session.title.slice(0, 37) + "..." : session.title
-      renderer.setTerminalTitle(`OC | ${title}`)
+      renderer.setTerminalTitle(`netsky | ${title}`)
       return
     }
 
     if (route.data.type === "plugin") {
-      renderer.setTerminalTitle(`OC | ${route.data.id}`)
+      renderer.setTerminalTitle(`netsky | ${route.data.id}`)
     }
   })
 
@@ -683,15 +684,7 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
           dialog.replace(() => <DialogAgent />)
         },
       },
-      {
-        name: "mcp.list",
-        title: "Toggle MCPs",
-        category: "Agent",
-        slashName: "mcps",
-        run: () => {
-          dialog.replace(() => <DialogMcp />)
-        },
-      },
+      ...capabilityManagerCommands(() => dialog.replace(() => <DialogCapabilities />)),
       {
         name: "agent.cycle",
         title: "Agent cycle",
@@ -819,7 +812,7 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
         name: "docs.open",
         title: "Open docs",
         run: () => {
-          open("https://opencode.ai/docs").catch(() => {})
+          open("https://github.com/netsky-prod/opencode#readme").catch(() => {})
           dialog.clear()
         },
         category: "System",
@@ -1070,7 +1063,7 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
     await DialogAlert.show(
       dialog,
       "Update Complete",
-      `Successfully updated to OpenCode v${result.data.version}. Please restart the application.`,
+      `Successfully updated to Netsky Code v${result.data.version}. Please restart the application.`,
     )
 
     void exit()

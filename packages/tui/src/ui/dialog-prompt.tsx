@@ -13,6 +13,7 @@ export type DialogPromptProps = {
   value?: string
   busy?: boolean
   busyText?: string
+  secret?: boolean
   onConfirm?: (value: string) => void
   onCancel?: () => void
 }
@@ -24,10 +25,40 @@ export function DialogPrompt(props: DialogPromptProps) {
   const submitShortcut = useCommandShortcut("dialog.prompt.submit")
   const [textareaTarget, setTextareaTarget] = createSignal<TextareaRenderable>()
   let textarea: TextareaRenderable
+  let secret = props.value ?? ""
+  let updatingSecret = false
 
   function confirm() {
     if (props.busy) return
-    props.onConfirm?.(textarea.plainText)
+    props.onConfirm?.(props.secret ? secret : textarea.plainText)
+  }
+
+  function concealSecret() {
+    if (!props.secret || updatingSecret || !textarea) return
+    const visible = textarea.plainText
+    const previous = "•".repeat(secret.length)
+    if (visible === previous) return
+    const cursor = textarea.cursorOffset
+    const delta = visible.length - previous.length
+    if (delta > 0) {
+      const start = Math.max(0, cursor - delta)
+      secret = secret.slice(0, start) + visible.slice(start, start + delta) + secret.slice(start)
+    }
+    if (delta < 0) {
+      const start = Math.max(0, cursor)
+      secret = secret.slice(0, start) + secret.slice(start - delta)
+    }
+    if (delta === 0 && visible !== previous) {
+      const start = [...visible].findIndex((char) => char !== "•")
+      if (start >= 0) {
+        const end = [...visible].findLastIndex((char) => char !== "•") + 1
+        secret = secret.slice(0, start) + visible.slice(start, end) + secret.slice(end)
+      }
+    }
+    updatingSecret = true
+    textarea.setText("•".repeat(secret.length))
+    textarea.cursorOffset = Math.min(cursor, secret.length)
+    updatingSecret = false
   }
 
   useBindings(() => ({
@@ -48,6 +79,7 @@ export function DialogPrompt(props: DialogPromptProps) {
 
   onMount(() => {
     dialog.setSize("medium")
+    if (props.secret) textarea.setText("•".repeat(secret.length))
     setTimeout(() => {
       if (!textarea || textarea.isDestroyed) return
       if (props.busy) return
@@ -97,6 +129,7 @@ export function DialogPrompt(props: DialogPromptProps) {
           focusedTextColor={props.busy ? theme.textMuted : theme.text}
           cursorColor={props.busy ? theme.backgroundElement : theme.text}
           cursorStyle={tuiConfig.cursor}
+          onContentChange={concealSecret}
         />
         <Show when={props.busy}>
           <Spinner color={theme.textMuted}>{props.busyText ?? "Working..."}</Spinner>

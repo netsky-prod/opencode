@@ -23,6 +23,7 @@ async function mountPrompt(input: {
   root: string
   keybinds: Partial<TuiKeybind.Keybinds>
   onConfirm: (value: string) => void
+  secret?: boolean
 }) {
   const state = path.join(input.root, "state")
   await mkdir(state, { recursive: true })
@@ -71,7 +72,12 @@ async function mountPrompt(input: {
               <ThemeProvider mode="dark">
                 <ToastProvider>
                   <DialogProvider>
-                    <DialogPrompt title="Rename Session" value="draft" onConfirm={input.onConfirm} />
+                    <DialogPrompt
+                      title="Rename Session"
+                      value="draft"
+                      secret={input.secret}
+                      onConfirm={input.onConfirm}
+                    />
                   </DialogProvider>
                 </ToastProvider>
               </ThemeProvider>
@@ -141,6 +147,29 @@ test("dialog prompt submit can be rebound separately from input submit", async (
     prompt.app.mockInput.pressKey("y", { ctrl: true })
 
     expect(confirmed).toEqual(["draft"])
+  } finally {
+    await prompt.cleanup()
+  }
+})
+
+test("dialog prompt keeps secret values out of the rendered terminal", async () => {
+  await using tmp = await tmpdir()
+  const confirmed: string[] = []
+  const prompt = await mountPrompt({
+    root: tmp.path,
+    keybinds: {},
+    secret: true,
+    onConfirm: (value) => confirmed.push(value),
+  })
+
+  try {
+    await wait(() => prompt.app.renderer.currentFocusedEditor instanceof TextareaRenderable)
+    prompt.app.mockInput.pressKey("x")
+    await prompt.app.renderOnce()
+    expect(prompt.app.captureCharFrame()).not.toContain("draft")
+
+    prompt.app.mockInput.pressEnter()
+    expect(confirmed).toEqual(["draftx"])
   } finally {
     await prompt.cleanup()
   }

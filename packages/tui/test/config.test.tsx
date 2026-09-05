@@ -63,6 +63,7 @@ test("resolves host-neutral defaults", () => {
   expect(config.mouse).toBe(true)
   expect(config.keybinds.has("terminal.suspend")).toBe(true)
   expect(config.keybinds.has("session.list")).toBe(true)
+  expect(config.keybinds.has("dialog.capability.toggle")).toBe(true)
   expect(config.cursor).toBeUndefined()
 })
 
@@ -99,6 +100,12 @@ test("resolves a session move keybind", () => {
   const config = resolve({ keybinds: { session_move: "ctrl+o" } }, { terminalSuspend: true })
 
   expect(config.keybinds.get("session.move")).toMatchObject([{ key: "ctrl+o" }])
+})
+
+test("resolves a capability manager keybind", () => {
+  const config = resolve({ keybinds: { capability_list: "ctrl+k" } }, { terminalSuspend: true })
+
+  expect(config.keybinds.get("capability.list")).toMatchObject([{ key: "ctrl+k" }])
 })
 
 test("disables suspend and assigns ctrl+z to undo when unsupported", () => {
